@@ -354,7 +354,7 @@ export class GameScene extends Phaser.Scene {
     const zoom = this.zoom;
     const viewW = this.scale.width / zoom;
     const viewH = this.scale.height / zoom;
-    const anchor = this.portrait ? 0.6 : 0.68;
+    const anchor = this.portrait ? 0.66 : 0.68;
 
     const ground = this.simulation.course.surfaceAt(x)?.y ?? BASE_Y;
     const restY = Math.min(ground, BASE_Y + 60);
@@ -381,12 +381,12 @@ export class GameScene extends Phaser.Scene {
       sky.setAlpha(i === b.index ? 1 : b.t);
       sky.setDepth(i === b.index ? -100 : -99);
     });
-    const restTop = BASE_Y - viewH * (this.portrait ? 0.6 : 0.68);
+    const restTop = BASE_Y - viewH * (this.portrait ? 0.66 : 0.68);
     const liftPx = (restTop - worldTop) * this.zoom;
-    const horizon = H * (this.portrait ? 0.6 : 0.68) + liftPx * 0.25;
+    const horizon = H * (this.portrait ? 0.66 : 0.68) + liftPx * 0.25;
     this.stars.setAlpha(b.stars).setTilePosition(worldLeft * 0.01, -liftPx * 0.05);
     const sunSize = Math.min(W, H) * (this.portrait ? 0.75 : 0.55);
-    this.sun.setDisplaySize(sunSize, sunSize).setPosition(W * (this.portrait ? 0.6 : 0.68), horizon - sunSize * 0.18 + liftPx * 0.05).setAlpha(b.sun).setVisible(b.sun > 0.01);
+    this.sun.setDisplaySize(sunSize, sunSize).setPosition(W * (this.portrait ? 0.66 : 0.68), horizon - sunSize * 0.18 + liftPx * 0.05).setAlpha(b.sun).setVisible(b.sun > 0.01);
     const tint: Record<keyof typeof this.layers, [number, number]> = {
       mountains: [b.mountain, 1],
       structures: [b.structures, b.structuresAlpha],
@@ -427,7 +427,7 @@ export class GameScene extends Phaser.Scene {
       g.fillStyle(biome.ground, 1);
       g.fillPoints([{ x: seg.x0, y: seg.y0 }, { x: seg.x1, y: seg.y1 }, { x: seg.x1, y: bottom }, { x: seg.x0, y: bottom }], true);
       // depth strata
-      for (const [depth, alpha] of [[16, 0.22], [42, 0.12], [90, 0.06]] as const) {
+      for (const [depth, alpha] of [[16, 0.22], [42, 0.14], [90, 0.09], [170, 0.06], [290, 0.04]] as const) {
         g.lineStyle(2, edge, alpha);
         g.lineBetween(seg.x0, seg.y0 + depth, seg.x1, seg.y1 + depth);
       }
@@ -438,7 +438,7 @@ export class GameScene extends Phaser.Scene {
       const s = course.surfaceAt(gx);
       if (!s) continue;
       g.lineStyle(2, edge, 0.13);
-      g.lineBetween(gx, s.y + 4, gx, s.y + 110);
+      g.lineBetween(gx, s.y + 4, gx, s.y + 300);
     }
     for (const seg of segments) {
       if (seg.kind === 'gap') {
