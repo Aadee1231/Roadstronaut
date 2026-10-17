@@ -45,6 +45,8 @@ export class GameScene extends Phaser.Scene {
   private inputHeld = false;
   private pointerHeld = false;
   private keyboardHeld = false;
+  /** Guarantees a tap shorter than one simulation step still registers as a press. */
+  private pressLatch = false;
   private activeRun = false;
   private finishedRun = false;
   private attractMode = true;
@@ -147,7 +149,7 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-UP', this.pressKeyboard, this);
     this.input.keyboard?.on('keyup-UP', this.releaseKeyboard, this);
     this.input.keyboard?.on('keydown-ESC', () => this.game.events.emit('pause-request'), this);
-    this.input.on('pointerdown', () => { this.pointerHeld = true; });
+    this.input.on('pointerdown', () => { this.pointerHeld = true; this.pressLatch = true; });
     this.input.on('pointerup', () => { this.pointerHeld = false; });
     this.input.on('pointerupoutside', () => { this.pointerHeld = false; });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -173,7 +175,8 @@ export class GameScene extends Phaser.Scene {
       this.previousX = this.simulation.state.x;
       this.previousY = this.simulation.state.y;
       this.previousAngle = this.simulation.state.angle;
-      const held = this.activeRun ? (this.pointerHeld || this.keyboardHeld) : this.attractInput();
+      const held = this.activeRun ? (this.pointerHeld || this.keyboardHeld || this.pressLatch) : this.attractInput();
+      if (this.activeRun) this.pressLatch = false;
       this.inputHeld = held;
       this.simulation.step(held);
       if (this.activeRun) this.inputLog.push(held);
@@ -210,6 +213,7 @@ export class GameScene extends Phaser.Scene {
     this.attractMode = false;
     this.pointerHeld = false;
     this.keyboardHeld = false;
+    this.pressLatch = false;
   }
 
   private startAttractMode(): void {
@@ -248,6 +252,7 @@ export class GameScene extends Phaser.Scene {
 
   private pressKeyboard(event: KeyboardEvent): void {
     event.preventDefault();
+    if (!event.repeat) this.pressLatch = true;
     this.keyboardHeld = true;
   }
 
