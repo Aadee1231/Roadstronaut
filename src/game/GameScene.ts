@@ -229,7 +229,7 @@ export class GameScene extends Phaser.Scene {
     this.previousX = simulation.state.x;
     this.previousY = simulation.state.y;
     this.previousAngle = simulation.state.angle;
-    this.camY = simulation.state.y;
+    this.camY = Number.NaN;
     this.trail.length = 0;
     this.crashTimer = 0;
     this.car.setVisible(true).setAlpha(1);
@@ -360,7 +360,7 @@ export class GameScene extends Phaser.Scene {
     const restY = Math.min(ground, BASE_Y + 60);
     let targetTop = restY - viewH * anchor;
     targetTop = Math.min(targetTop, y - viewH * 0.3);
-    const camTop = Phaser.Math.Linear(this.camY, targetTop, 1 - Math.exp(-dt * 5));
+    const camTop = Number.isNaN(this.camY) ? targetTop : Phaser.Math.Linear(this.camY, targetTop, 1 - Math.exp(-dt * 5));
     this.camY = camTop;
     const worldLeft = x - viewW * (this.portrait ? 0.2 : 0.24);
     const worldTop = camTop;
