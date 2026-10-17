@@ -22,10 +22,20 @@ function storageSet(key: string, value: string): void {
 function getPlayerId(): string {
   let id = storageGet(KEYS.playerId);
   if (!id) {
-    id = globalThis.crypto?.randomUUID?.() ?? `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
+    id = globalThis.crypto?.randomUUID?.() ?? createFallbackUuid();
     storageSet(KEYS.playerId, id);
   }
   return id;
+}
+
+function createFallbackUuid(): string {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function safeNickname(value: string): string {
@@ -186,7 +196,7 @@ export class GameUI {
     try {
       const run = await startRun(this.playerId);
       this.currentRunToken = run.runToken;
-      this.mode = 'dev-memory';
+      this.mode = run.mode;
       this.game.events.emit('run-start', { seed: run.seed });
     } catch {
       const seed = new Uint32Array(1);

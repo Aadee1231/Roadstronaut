@@ -24,7 +24,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   return payload as T;
 }
 
-export async function startRun(playerId: string): Promise<{ runToken: string; seed: number; runId: string; expiresAt: string }> {
+export async function startRun(playerId: string): Promise<{ runToken: string; seed: number; runId: string; expiresAt: string; mode: 'supabase' | 'dev-memory' }> {
   return request('/api/run-start', { playerId });
 }
 
