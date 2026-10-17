@@ -1,4 +1,5 @@
 import { COURSE_CHUNK_LENGTH, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED } from './constants';
+import { atan2 } from './detmath';
 import { SeededRng } from './rng';
 
 export type SegmentKind = 'flat' | 'kicker' | 'launch' | 'slope' | 'gap' | 'platform';
@@ -162,7 +163,7 @@ export class Course {
     if (segment.kind === 'launch' || segment.kind === 'kicker' || segment.kind === 'slope' || segment.kind === 'platform') {
       const width = segment.x1 - segment.x0;
       const t = Math.max(0, Math.min(1, (x - segment.x0) / width));
-      return { y: segment.y0 + (segment.y1 - segment.y0) * t, slope: Math.atan((segment.y1 - segment.y0) / width), segment };
+      return { y: segment.y0 + (segment.y1 - segment.y0) * t, slope: atan2(segment.y1 - segment.y0, width), segment };
     }
     return { y: BASE_Y, slope: 0, segment };
   }

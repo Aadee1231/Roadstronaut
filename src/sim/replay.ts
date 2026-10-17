@@ -24,7 +24,9 @@ export function decodeInputLog(log: string, maxTicks = 20 * 60 * 120): boolean[]
   if (typeof log !== 'string' || log.length > 1_000_000) throw new Error('invalid_input_log');
   const result: boolean[] = [];
   if (log === '') return result;
-  for (const part of log.split('.')) {
+  const parts = log.split('.');
+  if (parts[parts.length - 1] === '') parts.pop();
+  for (const part of parts) {
     const match = /^([01])([0-9a-z]+)$/.exec(part);
     if (!match) throw new Error('invalid_input_log');
     const count = Number.parseInt(match[2], 36);
