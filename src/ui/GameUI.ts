@@ -117,7 +117,7 @@ export class GameUI {
       <section class="screen-panel modal-panel howto-panel is-hidden" id="howto-screen" aria-label="How to play">
         <div class="panel-heading"><div><span class="panel-eyebrow">FLIGHT SCHOOL</span><h2>STAY ON THRUST</h2></div><button class="icon-button close-button" data-action="close-panel" aria-label="Close">×</button></div>
         <div class="howto-row"><span class="control-key">SPACE<br>↑<br>TAP</span><div><b>JUMP THE LINE</b><p>Tap to leap over hazards. Catch a glowing launch ramp for extra airtime.</p></div></div>
-        <div class="howto-row"><span class="control-key">HOLD</span><div><b>FLIP IN THE AIR</b><p>Press again after takeoff to rotate. Each full front flip pays big.</p></div></div>
+        <div class="howto-row"><span class="control-key">HOLD</span><div><b>FLIP IN THE AIR</b><p>After takeoff, press and hold to rotate forward. Release to level out. Each full flip pays big.</p></div></div>
         <div class="howto-row"><span class="control-key">RELEASE</span><div><b>STICK THE LANDING</b><p>Let go to stabilize. Hit the ground level for a perfect landing bonus.</p></div></div>
         <div class="howto-note"><span>⚡</span> Thruster energy refills on landings. Clean jumps beat reckless flips.</div>
         <button class="button button-primary" data-action="close-panel">GOT IT</button>
@@ -268,7 +268,7 @@ export class GameUI {
       '#result-flips': String(state.stats.totalFlips),
       '#result-best-trick': String(state.stats.bestTrick),
       '#result-combo': String(state.stats.maxCombo),
-      '#result-distance': `${Math.floor(state.stats.distance / 100)} M`,
+      '#result-distance': `${Math.floor(state.stats.distance / 2.5)} M`,
     };
     for (const [selector, value] of Object.entries(values)) {
       const element = this.root.querySelector(selector);
@@ -296,7 +296,7 @@ export class GameUI {
     this.text('#combo-value', state.combo ? `COMBO ×${Math.min(8, 1 + state.combo * 0.5).toFixed(state.combo % 2 ? 1 : 0)}` : '');
     this.text('#energy-value', String(Math.round(state.energy)));
     this.text('#speed-value', String(Math.round(state.speed * 0.78)));
-    this.text('#distance-value', `${Math.floor(state.stats.distance / 100)} M`);
+    this.text('#distance-value', `${Math.floor(state.stats.distance / 2.5)} M`);
     const fill = this.root.querySelector<HTMLElement>('#energy-fill');
     if (fill) {
       fill.style.width = `${state.energy}%`;
@@ -332,7 +332,7 @@ export class GameUI {
   private setTutorial(which: 'tap' | 'hold' | ''): void {
     const hint = this.root.querySelector<HTMLElement>('#tutorial-hint');
     if (!hint) return;
-    hint.textContent = which === 'tap' ? 'TAP / SPACE TO JUMP' : which === 'hold' ? 'RE-PRESS IN AIR TO FLIP · RELEASE TO STABILIZE' : '';
+    hint.textContent = which === 'tap' ? 'TAP / SPACE TO JUMP' : which === 'hold' ? 'IN THE AIR: PRESS & HOLD TO FLIP · RELEASE TO LEVEL' : '';
     hint.classList.toggle('is-hidden', !which);
   }
 

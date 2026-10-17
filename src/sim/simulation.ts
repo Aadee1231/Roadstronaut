@@ -52,9 +52,10 @@ interface BodyCircle {
   radius: number;
 }
 
-const WHEEL_VERTICAL_OFFSET = CAR_HEIGHT * 0.32;
+export const WHEEL_VERTICAL_OFFSET = CAR_HEIGHT * 0.32;
 const BODY_RADIUS = CAR_HEIGHT * 0.3;
-const RELEASE_DAMPING_RATE = 7;
+/** exp(-7 * FIXED_DT) as a literal so replays never depend on an engine's Math.exp. */
+const RELEASE_DAMPING_PER_STEP = 0.94333544987349216;
 
 export class Simulation {
   readonly course: Course;
@@ -170,7 +171,7 @@ export class Simulation {
         state.energy = max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
         if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
       } else {
-        state.angularVelocity *= Math.exp(-RELEASE_DAMPING_RATE * dt);
+        state.angularVelocity *= RELEASE_DAMPING_PER_STEP;
         if (Math.abs(normalizeAngle(state.angle)) < 0.55) {
           state.angularVelocity += -normalizeAngle(state.angle) * 0.35 * dt;
         }

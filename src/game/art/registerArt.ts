@@ -1,142 +1,83 @@
 import type Phaser from 'phaser';
+import { BIOMES } from '../biomes';
+import { drawMountains, drawSkyline, drawSkylineLights, drawStars, drawStructureBeacons, drawStructures, drawSun } from './backgroundArt';
+import { CAR_ART, drawCarBody, drawWheel } from './carArt';
 
-function canvasTexture(scene: Phaser.Scene, key: string, width: number, height: number, paint: (ctx: CanvasRenderingContext2D) => void): void {
+/** Supersampling factor for the car textures. */
+export const CAR_TEXTURE_SCALE = 2;
+
+function canvasTexture(scene: Phaser.Scene, key: string, width: number, height: number, paint: (ctx: CanvasRenderingContext2D, w: number, h: number) => void): void {
   if (scene.textures.exists(key)) return;
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext('2d');
   if (!context) throw new Error(`Canvas2D unavailable for ${key}`);
-  paint(context);
+  paint(context, width, height);
   const texture = scene.textures.addCanvas(key, canvas);
   if (!texture) throw new Error(`Could not register texture ${key}`);
   texture.refresh();
 }
 
+function hex(c: number): string {
+  return `#${c.toString(16).padStart(6, '0')}`;
+}
+
+function radial(ctx: CanvasRenderingContext2D, size: number, stops: [number, string][]): void {
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  for (const [o, c] of stops) g.addColorStop(o, c);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+}
+
 export function registerArt(scene: Phaser.Scene): void {
-  canvasTexture(scene, 'car-body', 180, 76, (ctx) => {
-    ctx.save();
-    ctx.shadowColor = '#2ef2ff';
-    ctx.shadowBlur = 16;
-    const body = ctx.createLinearGradient(12, 20, 160, 60);
-    body.addColorStop(0, '#e5fbff');
-    body.addColorStop(0.24, '#8feeff');
-    body.addColorStop(0.58, '#526fca');
-    body.addColorStop(1, '#20284e');
+  const s = CAR_TEXTURE_SCALE;
+  canvasTexture(scene, 'car-body', CAR_ART.width * s, CAR_ART.height * s, (ctx) => drawCarBody(ctx, s));
+  canvasTexture(scene, 'car-wheel', 64 * s, 64 * s, (ctx) => drawWheel(ctx, s));
+  canvasTexture(scene, 'thruster-flame', 128, 48, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(w, 0, 0, 0);
+    g.addColorStop(0, 'rgba(230,255,255,1)');
+    g.addColorStop(0.18, 'rgba(46,242,255,0.95)');
+    g.addColorStop(0.55, 'rgba(123,44,255,0.55)');
+    g.addColorStop(1, 'rgba(255,107,74,0)');
+    ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.moveTo(12, 50);
-    ctx.lineTo(24, 36);
-    ctx.quadraticCurveTo(43, 32, 58, 17);
-    ctx.quadraticCurveTo(77, 7, 112, 12);
-    ctx.lineTo(145, 22);
-    ctx.quadraticCurveTo(164, 27, 169, 41);
-    ctx.lineTo(168, 52);
-    ctx.lineTo(142, 58);
-    ctx.lineTo(48, 60);
-    ctx.lineTo(20, 57);
-    ctx.closePath();
-    ctx.fillStyle = body;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = '#c2fcff';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(66, 20);
-    ctx.quadraticCurveTo(82, 10, 109, 17);
-    ctx.lineTo(130, 26);
-    ctx.lineTo(59, 28);
-    ctx.closePath();
-    ctx.fillStyle = '#101a38';
-    ctx.fill();
-    ctx.strokeStyle = '#72f4ff';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.fillStyle = '#ff6b4a';
-    ctx.fillRect(136, 40, 22, 4);
-    ctx.fillStyle = '#efffff';
-    ctx.fillRect(14, 43, 11, 5);
-    ctx.beginPath();
-    ctx.moveTo(40, 52);
-    ctx.lineTo(125, 52);
-    ctx.strokeStyle = 'rgba(255,255,255,.7)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.restore();
-  });
-
-  canvasTexture(scene, 'car-wheel', 44, 44, (ctx) => {
-    ctx.beginPath();
-    ctx.arc(22, 22, 19, 0, Math.PI * 2);
-    ctx.fillStyle = '#080b18';
-    ctx.fill();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#9caac9';
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(22, 22, 10, 0, Math.PI * 2);
-    ctx.fillStyle = '#5f719d';
-    ctx.fill();
-    ctx.strokeStyle = '#d7fbff';
-    ctx.lineWidth = 2;
-    for (let i = 0; i < 5; i += 1) {
-      const a = i * Math.PI * 0.4;
-      ctx.beginPath();
-      ctx.moveTo(22 + Math.cos(a) * 3, 22 + Math.sin(a) * 3);
-      ctx.lineTo(22 + Math.cos(a) * 9, 22 + Math.sin(a) * 9);
-      ctx.stroke();
-    }
-  });
-
-  canvasTexture(scene, 'thruster-flame', 90, 36, (ctx) => {
-    const gradient = ctx.createLinearGradient(2, 18, 86, 18);
-    gradient.addColorStop(0, 'rgba(255,107,74,0)');
-    gradient.addColorStop(0.32, '#ffb347');
-    gradient.addColorStop(0.72, '#2ef2ff');
-    gradient.addColorStop(1, 'rgba(46,242,255,0)');
-    ctx.beginPath();
-    ctx.moveTo(4, 18);
-    ctx.lineTo(82, 4);
-    ctx.lineTo(68, 18);
-    ctx.lineTo(82, 32);
-    ctx.closePath();
-    ctx.fillStyle = gradient;
-    ctx.fill();
-  });
-
-  canvasTexture(scene, 'sky-gradient', 1024, 720, (ctx) => {
-    const gradient = ctx.createLinearGradient(0, 0, 0, 720);
-    gradient.addColorStop(0, '#090a27');
-    gradient.addColorStop(0.48, '#28205d');
-    gradient.addColorStop(0.78, '#743663');
-    gradient.addColorStop(1, '#f27669');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 1024, 720);
-    const glow = ctx.createRadialGradient(780, 475, 10, 780, 475, 380);
-    glow.addColorStop(0, 'rgba(255,167,126,.58)');
-    glow.addColorStop(1, 'rgba(255,107,74,0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(300, 140, 724, 580);
-  });
-
-  canvasTexture(scene, 'mountain-ridge', 1024, 260, (ctx) => {
-    ctx.fillStyle = '#15183e';
-    ctx.beginPath();
-    ctx.moveTo(0, 260);
-    for (let x = 0; x <= 1024; x += 128) ctx.lineTo(x, 82 + ((x * 37) % 96));
-    ctx.lineTo(1024, 260);
+    ctx.moveTo(w, h * 0.22);
+    ctx.quadraticCurveTo(w * 0.45, h * 0.1, 0, h / 2);
+    ctx.quadraticCurveTo(w * 0.45, h * 0.9, w, h * 0.78);
     ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = 'rgba(46,242,255,.3)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(11,10,35,.7)';
-    for (let x = 20; x < 1024; x += 62) {
-      const h = 55 + ((x * 13) % 115);
-      ctx.fillRect(x, 260 - h, 28 + (x % 19), h);
-      ctx.fillStyle = 'rgba(255,179,71,.24)';
-      for (let wy = 260 - h + 12; wy < 250; wy += 23) ctx.fillRect(x + 7, wy, 3, 5);
-      ctx.fillStyle = 'rgba(11,10,35,.7)';
-    }
+    ctx.globalCompositeOperation = 'lighter';
+    const core = ctx.createLinearGradient(w, 0, w * 0.4, 0);
+    core.addColorStop(0, 'rgba(255,255,255,0.95)');
+    core.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.ellipse(w * 0.85, h / 2, w * 0.18, h * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+  });
+  canvasTexture(scene, 'spark', 32, 32, (ctx) => radial(ctx, 32, [[0, 'rgba(255,255,255,1)'], [0.25, 'rgba(255,255,255,0.8)'], [1, 'rgba(255,255,255,0)']]));
+  canvasTexture(scene, 'smoke', 64, 64, (ctx) => radial(ctx, 64, [[0, 'rgba(255,255,255,0.55)'], [0.5, 'rgba(255,255,255,0.22)'], [1, 'rgba(255,255,255,0)']]));
+  canvasTexture(scene, 'glow', 128, 128, (ctx) => radial(ctx, 128, [[0, 'rgba(255,255,255,0.9)'], [0.35, 'rgba(255,255,255,0.3)'], [1, 'rgba(255,255,255,0)']]));
+  canvasTexture(scene, 'bg-stars', 1024, 512, drawStars);
+  canvasTexture(scene, 'bg-sun', 512, 512, (ctx, w) => drawSun(ctx, w));
+  canvasTexture(scene, 'bg-mountains', 1024, 256, drawMountains);
+  canvasTexture(scene, 'bg-skyline', 1024, 320, drawSkyline);
+  canvasTexture(scene, 'bg-skyline-lights', 1024, 320, drawSkylineLights);
+  canvasTexture(scene, 'bg-structures', 1024, 320, drawStructures);
+  canvasTexture(scene, 'bg-beacons', 1024, 320, drawStructureBeacons);
+  canvasTexture(scene, 'bg-haze', 8, 256, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.75, 'rgba(255,255,255,0.55)');
+    g.addColorStop(1, 'rgba(255,255,255,0.9)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  });
+  BIOMES.forEach((biome, i) => {
+    canvasTexture(scene, `bg-sky-${i}`, 8, 512, (ctx, w, h) => {
+      const g = ctx.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, hex(biome.sky[0]));
+      g.addColorStop(0.62, hex(biome.sky[1]));
+      g.addColorStop(1, hex(biome.sky[2]));
+      ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    });
   });
 }
