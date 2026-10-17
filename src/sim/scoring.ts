@@ -1,3 +1,5 @@
+import { max, min } from './detmath';
+
 export type LandingQuality = 'clean' | 'great' | 'perfect';
 
 export interface RunStats {
@@ -28,28 +30,28 @@ export function landingPoints(quality: LandingQuality): number {
 }
 
 export function airtimePoints(seconds: number): number {
-  return Math.min(1000, Math.floor(Math.max(0, seconds - 0.8) / 0.5) * 100);
+  return min(1000, Math.floor(max(0, seconds - 0.8) / 0.5) * 100);
 }
 
 export function comboMultiplier(combo: number): number {
-  return Math.min(8, 1 + combo * 0.5);
+  return min(8, 1 + combo * 0.5);
 }
 
 export function awardLanding(stats: RunStats, quality: LandingQuality, flips: number, airtime: number, combo: number): number {
   const trick = flips > 0 || quality === 'perfect';
   const nextCombo = trick ? combo + 1 : combo;
   const multiplier = comboMultiplier(nextCombo);
-  const points = Math.round((flipPoints(flips) + landingPoints(quality) + airtimePoints(airtime)) * multiplier);
+  const points = Math.floor((flipPoints(flips) + landingPoints(quality) + airtimePoints(airtime)) * multiplier + 0.5);
   stats.score += points;
   stats.totalFlips += flips;
-  stats.bestTrick = Math.max(stats.bestTrick, flips);
+  stats.bestTrick = max(stats.bestTrick, flips);
   if (quality === 'perfect') stats.perfects += 1;
-  stats.maxCombo = Math.max(stats.maxCombo, nextCombo);
+  stats.maxCombo = max(stats.maxCombo, nextCombo);
   return points;
 }
 
 export function awardNearMiss(stats: RunStats, combo: number): number {
-  const points = Math.round(250 * comboMultiplier(combo));
+  const points = Math.floor(250 * comboMultiplier(combo) + 0.5);
   stats.score += points;
   stats.nearMisses += 1;
   return points;

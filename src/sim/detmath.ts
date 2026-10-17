@@ -2,6 +2,18 @@ const TAU = 6.283185307179586;
 const PI = 3.141592653589793;
 const HALF_PI = 1.5707963267948966;
 
+export function min(a: number, b: number): number {
+  return a < b ? a : b;
+}
+
+export function max(a: number, b: number): number {
+  return a > b ? a : b;
+}
+
+export function clamp(value: number, lower: number, upper: number): number {
+  return value < lower ? lower : value > upper ? upper : value;
+}
+
 export function sin(value: number): number {
   let x = value - Math.floor((value + PI) / TAU) * TAU;
   if (x > HALF_PI) x = PI - x;

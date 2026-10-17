@@ -6,7 +6,7 @@ import {
   SUPER_JUMP_VELOCITY,
 } from './constants';
 import { createCourse, type Course } from './course';
-import { atan2, normalizeAngle, sin } from './detmath';
+import { atan2, max, min, normalizeAngle, sin } from './detmath';
 import { awardLanding, awardNearMiss, createRunStats, type LandingQuality, type RunStats } from './scoring';
 
 export type SimEvent =
@@ -83,7 +83,7 @@ export class Simulation {
     }
     const dt = FIXED_DT;
     state.elapsed += dt;
-    state.speed = Math.min(MAX_SPEED, START_SPEED + (MAX_SPEED - START_SPEED) * Math.min(state.elapsed / SPEED_RAMP_SECONDS, 1));
+    state.speed = min(MAX_SPEED, START_SPEED + (MAX_SPEED - START_SPEED) * min(state.elapsed / SPEED_RAMP_SECONDS, 1));
     state.vx = state.speed;
     this.previousX = state.x;
     state.x += state.vx * dt;
@@ -94,7 +94,7 @@ export class Simulation {
 
     const newPress = held && !this.previousHeld;
     if (state.grounded) {
-      state.energy = Math.min(ENERGY_MAX, state.energy + ENERGY_GROUNDED_REGEN * dt);
+      state.energy = min(ENERGY_MAX, state.energy + ENERGY_GROUNDED_REGEN * dt);
       state.angularVelocity *= 0.5;
       state.comboIdle += dt;
       if (state.comboIdle >= 5) {
@@ -119,7 +119,7 @@ export class Simulation {
         if (!newPress && previousSurface && previousSurface.segment.id !== surface.segment.id && previousSurface.slope < -0.08) {
           const launch = previousSurface.segment.kind === 'launch';
           this.leaveGround(launch);
-          state.vy = launch ? -340 : Math.max(-220, state.speed * sin(previousSurface.slope));
+          state.vy = launch ? -340 : max(-220, state.speed * sin(previousSurface.slope));
         }
       } else {
         this.leaveGround(false);
@@ -132,18 +132,18 @@ export class Simulation {
 
       const canRotate = held && this.airbornePressEligible && state.energy >= ROTATION_ENERGY_PER_SECOND * dt;
       if (canRotate) {
-        state.angularVelocity = Math.min(MAX_ANGULAR_SPEED, state.angularVelocity + ROTATION_ACCEL * dt);
-        state.energy = Math.max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
+        state.angularVelocity = min(MAX_ANGULAR_SPEED, state.angularVelocity + ROTATION_ACCEL * dt);
+        state.energy = max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
         if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
       } else {
         state.angularVelocity *= 0.91;
         if (Math.abs(normalizeAngle(state.angle)) < 0.55) state.angularVelocity += -normalizeAngle(state.angle) * 0.35 * dt;
       }
       state.angle += state.angularVelocity * dt;
-      if (canRotate) this.flipRotation += Math.max(0, state.angularVelocity * dt);
+      if (canRotate) this.flipRotation += max(0, state.angularVelocity * dt);
       const fullFlips = Math.floor(this.flipRotation / (Math.PI * 2));
       if (fullFlips > state.flips) {
-        state.energy = Math.min(ENERGY_MAX, state.energy + (fullFlips - state.flips) * 10);
+        state.energy = min(ENERGY_MAX, state.energy + (fullFlips - state.flips) * 10);
         state.flips = fullFlips;
         this.events.push({ type: 'flipComplete', count: state.flips });
       }
@@ -177,7 +177,9 @@ export class Simulation {
     const rear = this.course.surfaceAt(state.x - CAR_LENGTH * 0.38);
     const surface = front ?? rear;
     if (!surface || state.vy < 0) return;
-    const groundY = Math.min(front?.y ?? Infinity, rear?.y ?? Infinity);
+    const frontY = front?.y ?? Infinity;
+    const rearY = rear?.y ?? Infinity;
+    const groundY = min(frontY, rearY);
     if (state.y + CAR_HEIGHT / 2 < groundY - 6) return;
     const difference = Math.abs(normalizeAngle(state.angle - surface.slope));
     if (difference > LANDING_LIMIT) {
@@ -194,7 +196,7 @@ export class Simulation {
       state.comboIdle = 0;
     }
     const points = awardLanding(state.stats, quality, state.flips, state.airtime, oldCombo);
-    state.energy = Math.min(ENERGY_MAX, state.energy + (quality === 'perfect' ? 25 : quality === 'great' ? 15 : 8));
+    state.energy = min(ENERGY_MAX, state.energy + (quality === 'perfect' ? 25 : quality === 'great' ? 15 : 8));
     if (state.combo > oldCombo) this.events.push({ type: 'comboUp', count: state.combo });
     this.events.push({ type: 'land', quality, flips: state.flips, airtime: state.airtime, points });
     state.flips = 0;
@@ -207,16 +209,16 @@ export class Simulation {
     for (const hazard of hazards) {
       if (state.nearMissIds.includes(hazard.id)) continue;
       if (hazard.kind === 'gap') {
-        const edgeDistance = Math.min(Math.abs(state.x - hazard.x), Math.abs(state.x - hazard.x - hazard.width));
+        const edgeDistance = min(Math.abs(state.x - hazard.x), Math.abs(state.x - hazard.x - hazard.width));
         if (edgeDistance < NEAR_MISS_CLEARANCE && state.grounded) {
           state.nearMissIds.push(hazard.id);
-          state.energy = Math.min(ENERGY_MAX, state.energy + 10);
+          state.energy = min(ENERGY_MAX, state.energy + 10);
           awardNearMiss(state.stats, state.combo);
           this.events.push({ type: 'nearMiss', hazardId: hazard.id });
         }
       } else if (state.x > hazard.x + hazard.width && state.x - (hazard.x + hazard.width) < NEAR_MISS_CLEARANCE && state.y + CAR_HEIGHT / 2 < 520 - hazard.height) {
         state.nearMissIds.push(hazard.id);
-        state.energy = Math.min(ENERGY_MAX, state.energy + 10);
+        state.energy = min(ENERGY_MAX, state.energy + 10);
         awardNearMiss(state.stats, state.combo);
         this.events.push({ type: 'nearMiss', hazardId: hazard.id });
       }

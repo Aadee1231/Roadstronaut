@@ -50,6 +50,6 @@ export function replayRun(seed: number, inputLog: string | readonly boolean[]): 
     crashed: simulation.state.crashed,
     crashReason: simulation.state.crashReason,
     ticks,
-    durationMs: Math.round(simulation.state.elapsed * 1000),
+    durationMs: Math.floor(simulation.state.elapsed * 1000 + 0.5),
   };
 }

@@ -9,6 +9,7 @@ function canvasTexture(scene: Phaser.Scene, key: string, width: number, height: 
   if (!context) throw new Error(`Canvas2D unavailable for ${key}`);
   paint(context);
   const texture = scene.textures.addCanvas(key, canvas);
+  if (!texture) throw new Error(`Could not register texture ${key}`);
   texture.refresh();
 }
 

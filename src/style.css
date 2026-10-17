@@ -25,7 +25,9 @@ button { color: inherit; touch-action: manipulation; }
 #game-canvas canvas { display: block; touch-action: none; }
 #ui-root { z-index: 3; overflow: hidden; pointer-events: none; }
 .ui-vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 68% 45%, transparent 30%, rgba(4, 5, 20, .18) 82%, rgba(4, 5, 20, .52)); }
-.screen-panel, .hud, dialog { pointer-events: auto; }
+.screen-panel, dialog { pointer-events: auto; }
+.hud { pointer-events: none; }
+.hud button { pointer-events: auto; }
 .screen-panel { position: absolute; color: #f4f7ff; }
 .is-hidden { display: none !important; }
 

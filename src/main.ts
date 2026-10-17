@@ -20,7 +20,6 @@ const game = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game-canvas',
   backgroundColor: '#0b0a23',
-  resolution: Math.min(globalThis.devicePixelRatio || 1, 2),
   render: { antialias: true, pixelArt: false, roundPixels: false },
   scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH },
   input: { activePointers: 3, touch: { capture: true } },

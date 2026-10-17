@@ -1,5 +1,5 @@
 import { COURSE_CHUNK_LENGTH, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED } from './constants';
-import { atan2 } from './detmath';
+import { atan2, clamp, max, min } from './detmath';
 import { SeededRng } from './rng';
 
 export type SegmentKind = 'flat' | 'kicker' | 'launch' | 'slope' | 'gap' | 'platform';
@@ -35,7 +35,7 @@ export interface Surface {
 const BASE_Y = 520;
 
 function expectedSpeed(time: number): number {
-  return Math.min(MAX_SPEED, START_SPEED + (MAX_SPEED - START_SPEED) * Math.min(time / SPEED_RAMP_SECONDS, 1));
+  return min(MAX_SPEED, START_SPEED + (MAX_SPEED - START_SPEED) * min(time / SPEED_RAMP_SECONDS, 1));
 }
 
 function fairJumpReach(time: number): number {
@@ -47,7 +47,7 @@ function fairJumpReach(time: number): number {
 function generatedChunk(seed: number, index: number): CourseSegment {
   const start = index * COURSE_CHUNK_LENGTH;
   const rng = new SeededRng((seed ^ Math.imul(index + 1, 0x9e3779b1)) >>> 0);
-  const time = start / Math.max(START_SPEED, (START_SPEED + MAX_SPEED) / 2);
+  const time = start / max(START_SPEED, (START_SPEED + MAX_SPEED) / 2);
   const elapsedBand = time < 12 ? 0 : time < 30 ? 1 : time < 60 ? 2 : 3;
   const roll = rng.next();
   const reach = fairJumpReach(time);
@@ -65,7 +65,7 @@ function generatedChunk(seed: number, index: number): CourseSegment {
     y1 = BASE_Y - 74;
   } else if (roll < 0.43) {
     kind = 'gap';
-    const gapWidth = Math.min(240 + rng.range(0, 70), reach * 0.66);
+    const gapWidth = min(240 + rng.range(0, 70), reach * 0.66);
     kind = 'gap';
     const gapStart = start + 620;
     hazard = {
@@ -85,7 +85,7 @@ function generatedChunk(seed: number, index: number): CourseSegment {
       y1 = BASE_Y - 38;
     }
   } else if (elapsedBand > 0 && roll < 0.83) {
-    const height = Math.min(38 + rng.range(0, 35), Math.abs(JUMP_VELOCITY) ** 2 / (2 * GRAVITY) * 0.5);
+    const height = min(38 + rng.range(0, 35), Math.abs(JUMP_VELOCITY) * Math.abs(JUMP_VELOCITY) / (2 * GRAVITY) * 0.5);
     hazard = {
       id: `obstacle-${index}`,
       kind: rng.next() > 0.5 ? 'barrier' : 'pylon',
@@ -134,7 +134,7 @@ export class Course {
   constructor(readonly seed: number) {}
 
   chunk(index: number): CourseSegment {
-    const key = Math.max(0, index);
+    const key = max(0, index);
     let segment = this.cache.get(key);
     if (!segment) {
       segment = generatedChunk(this.seed, key);
@@ -144,7 +144,7 @@ export class Course {
   }
 
   segmentAt(x: number): CourseSegment {
-    const index = Math.floor(Math.max(0, x) / COURSE_CHUNK_LENGTH);
+    const index = Math.floor(max(0, x) / COURSE_CHUNK_LENGTH);
     const generated = this.chunk(index);
     if (generated.kind === 'gap' && x >= generated.x0 && x <= generated.x1) return generated;
     if (generated.kind === 'launch' && x >= generated.x0 && x <= generated.x1) return generated;
@@ -162,14 +162,14 @@ export class Course {
     if (segment.kind === 'gap') return null;
     if (segment.kind === 'launch' || segment.kind === 'kicker' || segment.kind === 'slope' || segment.kind === 'platform') {
       const width = segment.x1 - segment.x0;
-      const t = Math.max(0, Math.min(1, (x - segment.x0) / width));
+      const t = clamp((x - segment.x0) / width, 0, 1);
       return { y: segment.y0 + (segment.y1 - segment.y0) * t, slope: atan2(segment.y1 - segment.y0, width), segment };
     }
     return { y: BASE_Y, slope: 0, segment };
   }
 
   hazardsAhead(x: number, distance: number): Hazard[] {
-    const first = Math.max(0, Math.floor(x / COURSE_CHUNK_LENGTH) - 1);
+    const first = max(0, Math.floor(x / COURSE_CHUNK_LENGTH) - 1);
     const last = Math.floor((x + distance) / COURSE_CHUNK_LENGTH) + 1;
     const hazards: Hazard[] = [];
     for (let i = first; i <= last; i += 1) {
