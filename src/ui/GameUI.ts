@@ -146,7 +146,11 @@ export class GameUI {
         return;
       }
       event.stopPropagation();
+      this.game.events.emit('ui-sound', 'click');
       this.actions[button.dataset.action ?? '']?.(button);
+    });
+    root.addEventListener('pointerover', (event) => {
+      if ((event.target as HTMLElement).closest('button')) this.game.events.emit('ui-sound', 'hover');
     });
     window.addEventListener('keydown', (event) => {
       if ((event.code === 'Space' || event.code === 'ArrowUp') && !this.root.querySelector('#gameover-screen')?.classList.contains('is-hidden') && performance.now() - this.gameOverAt >= 600) {
@@ -220,6 +224,7 @@ export class GameUI {
       storageSet(KEYS.personalBest, String(this.personalBest));
       this.root.querySelector('#new-best')?.classList.remove('is-hidden');
       this.updateBestLabels();
+      this.game.events.emit('run-new-best');
     }
     const status = this.root.querySelector<HTMLElement>('#submit-status');
     if (!this.currentRunToken) {

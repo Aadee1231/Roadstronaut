@@ -9,6 +9,7 @@ import '@fontsource/rajdhani/500.css';
 import '@fontsource/rajdhani/600.css';
 import '@fontsource/rajdhani/700.css';
 import './style.css';
+import { AudioManager } from './game/audio/AudioManager';
 import { BootScene, GameScene } from './game/GameScene';
 import { GameUI } from './ui/GameUI';
 
@@ -29,6 +30,7 @@ const game = new Phaser.Game({
 const root = document.querySelector<HTMLElement>('#ui-root');
 if (!root) throw new Error('UI root is missing');
 new GameUI(root, game);
+new AudioManager(game.events);
 
 if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) {
   Object.defineProperty(window, '__thrust', {
