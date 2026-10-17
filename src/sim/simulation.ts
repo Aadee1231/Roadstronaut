@@ -1,12 +1,12 @@
 import {
   AIRBORNE_FALL_LIMIT, CAR_HEIGHT, CAR_LENGTH, ENERGY_GROUNDED_REGEN, ENERGY_MAX,
   FIXED_DT, GREAT_LIMIT, GRAVITY, JUMP_VELOCITY, LANDING_LIMIT, LAUNCH_BOOST,
-  MAX_ANGULAR_SPEED, MAX_RUN_SECONDS, MAX_SPEED, NEAR_MISS_CLEARANCE, PERFECT_LIMIT,
-  ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND, SPEED_RAMP_SECONDS, START_SPEED,
-  SUPER_JUMP_VELOCITY,
+  MAX_ANGULAR_SPEED, MAX_RUN_SECONDS, NEAR_MISS_CLEARANCE, PERFECT_LIMIT,
+  ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND, START_SPEED, SUPER_JUMP_VELOCITY,
+  WHEELBASE, WHEEL_RADIUS, speedAtTime,
 } from './constants';
-import { createCourse, type Course } from './course';
-import { atan2, max, min, normalizeAngle, sin } from './detmath';
+import { BASE_Y, createCourse, type Course, type Surface } from './course';
+import { atan2, clamp, cos, max, min, normalizeAngle, sin } from './detmath';
 import { awardLanding, awardNearMiss, createRunStats, type LandingQuality, type RunStats } from './scoring';
 
 export type SimEvent =
@@ -15,7 +15,7 @@ export type SimEvent =
   | { type: 'flipComplete'; count: number }
   | { type: 'land'; quality: LandingQuality; flips: number; airtime: number; points: number }
   | { type: 'nearMiss'; hazardId: string }
-  | { type: 'crash'; reason: string };
+  | { type: 'crash'; reason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' };
 
 export interface SimulationState {
   x: number;
@@ -27,8 +27,9 @@ export interface SimulationState {
   speed: number;
   energy: number;
   grounded: boolean;
+  rotating: boolean;
   crashed: boolean;
-  crashReason: string | null;
+  crashReason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' | null;
   elapsed: number;
   airtime: number;
   flips: number;
@@ -37,6 +38,23 @@ export interface SimulationState {
   nearMissIds: string[];
   stats: RunStats;
 }
+
+interface WheelPoint {
+  x: number;
+  yOffset: number;
+  bottom: number;
+  surface: Surface | null;
+}
+
+interface BodyCircle {
+  x: number;
+  y: number;
+  radius: number;
+}
+
+const WHEEL_VERTICAL_OFFSET = CAR_HEIGHT * 0.32;
+const BODY_RADIUS = CAR_HEIGHT * 0.3;
+const RELEASE_DAMPING_RATE = 7;
 
 export class Simulation {
   readonly course: Course;
@@ -53,7 +71,7 @@ export class Simulation {
     const surface = this.course.surfaceAt(0);
     this.state = {
       x: 0,
-      y: (surface?.y ?? 520) - CAR_HEIGHT / 2,
+      y: (surface?.y ?? BASE_Y) - WHEEL_VERTICAL_OFFSET - WHEEL_RADIUS,
       vx: START_SPEED,
       vy: 0,
       angle: 0,
@@ -61,6 +79,7 @@ export class Simulation {
       speed: START_SPEED,
       energy: ENERGY_MAX,
       grounded: true,
+      rotating: false,
       crashed: false,
       crashReason: null,
       elapsed: 0,
@@ -71,11 +90,13 @@ export class Simulation {
       nearMissIds: [],
       stats: createRunStats(),
     };
+    if (surface) this.syncGroundPose(surface);
   }
 
   step(held: boolean): void {
     this.events.length = 0;
     const state = this.state;
+    state.rotating = false;
     if (state.crashed) return;
     if (state.elapsed >= MAX_RUN_SECONDS) {
       this.crash('time-limit');
@@ -83,7 +104,7 @@ export class Simulation {
     }
     const dt = FIXED_DT;
     state.elapsed += dt;
-    state.speed = min(MAX_SPEED, START_SPEED + (MAX_SPEED - START_SPEED) * min(state.elapsed / SPEED_RAMP_SECONDS, 1));
+    state.speed = speedAtTime(state.elapsed);
     state.vx = state.speed;
     this.previousX = state.x;
     state.x += state.vx * dt;
@@ -101,28 +122,40 @@ export class Simulation {
         state.combo = 0;
         state.comboIdle = 0;
       }
+
       const previousSurface = this.course.surfaceAt(this.previousX);
       const surface = this.course.surfaceAt(state.x);
-      if (surface) {
-        state.y = surface.y - CAR_HEIGHT / 2;
-        state.angle += (surface.slope - state.angle) * 0.2;
-        if (newPress) {
-          const superJump = surface.segment.kind === 'launch' && state.x >= surface.segment.x1 - (surface.segment.x1 - surface.segment.x0) * 0.25;
-          state.grounded = false;
-          state.vy = superJump ? SUPER_JUMP_VELOCITY + LAUNCH_BOOST : JUMP_VELOCITY;
-          state.airtime = 0;
-          state.flips = 0;
-          this.flipRotation = 0;
-          this.airbornePressEligible = false;
-          this.events.push({ type: superJump ? 'superLaunch' : 'jump' });
+      if (surface) this.syncGroundPose(surface);
+      if (newPress && surface) {
+        const launchWindow = surface.segment.kind === 'launch'
+          && state.x >= surface.segment.x1 - (surface.segment.x1 - surface.segment.x0) * 0.25;
+        state.grounded = false;
+        state.airtime = 0;
+        state.flips = 0;
+        this.flipRotation = 0;
+        this.airbornePressEligible = false;
+        if (launchWindow) {
+          state.vy = state.speed * sin(surface.slope) + SUPER_JUMP_VELOCITY + LAUNCH_BOOST;
+          this.events.push({ type: 'superLaunch' });
+        } else {
+          state.vy = JUMP_VELOCITY;
+          this.events.push({ type: 'jump' });
         }
-        if (!newPress && previousSurface && previousSurface.segment.id !== surface.segment.id && previousSurface.slope < -0.08) {
+      } else if (!surface) {
+        this.leaveGround();
+        if (previousSurface && previousSurface.slope < -0.08) {
           const launch = previousSurface.segment.kind === 'launch';
-          this.leaveGround(launch);
-          state.vy = launch ? -340 : max(-220, state.speed * sin(previousSurface.slope));
+          state.vy = state.speed * sin(previousSurface.slope) + (launch ? LAUNCH_BOOST : 0);
         }
-      } else {
-        this.leaveGround(false);
+      } else if (
+        !newPress
+        && previousSurface
+        && previousSurface.segment.id !== surface.segment.id
+        && previousSurface.slope < -0.08
+      ) {
+        const launch = previousSurface.segment.kind === 'launch';
+        this.leaveGround();
+        state.vy = state.speed * sin(previousSurface.slope) + (launch ? LAUNCH_BOOST : 0);
       }
     } else {
       if (newPress) this.airbornePressEligible = true;
@@ -132,26 +165,30 @@ export class Simulation {
 
       const canRotate = held && this.airbornePressEligible && state.energy >= ROTATION_ENERGY_PER_SECOND * dt;
       if (canRotate) {
+        state.rotating = true;
         state.angularVelocity = min(MAX_ANGULAR_SPEED, state.angularVelocity + ROTATION_ACCEL * dt);
         state.energy = max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
         if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
       } else {
-        state.angularVelocity *= 0.91;
-        if (Math.abs(normalizeAngle(state.angle)) < 0.55) state.angularVelocity += -normalizeAngle(state.angle) * 0.35 * dt;
+        state.angularVelocity *= Math.exp(-RELEASE_DAMPING_RATE * dt);
+        if (Math.abs(normalizeAngle(state.angle)) < 0.55) {
+          state.angularVelocity += -normalizeAngle(state.angle) * 0.35 * dt;
+        }
       }
       state.angle += state.angularVelocity * dt;
-      if (canRotate) this.flipRotation += max(0, state.angularVelocity * dt);
+      this.flipRotation += max(0, state.angularVelocity * dt);
       const fullFlips = Math.floor(this.flipRotation / (Math.PI * 2));
       if (fullFlips > state.flips) {
         state.energy = min(ENERGY_MAX, state.energy + (fullFlips - state.flips) * 10);
         state.flips = fullFlips;
         this.events.push({ type: 'flipComplete', count: state.flips });
       }
-      this.checkNearMisses();
       this.checkLanding();
     }
+
     if (!state.crashed) this.checkCollision();
-    if (!state.grounded && state.y > (this.course.surfaceAt(state.x)?.y ?? 520) + AIRBORNE_FALL_LIMIT) this.crash('fell');
+    if (!state.crashed) this.checkNearMisses();
+    if (!state.grounded && state.y > this.groundReferenceY(state.x) + AIRBORNE_FALL_LIMIT) this.crash('fell');
     if (Math.floor(state.elapsed / 10) > this.lastMilestone) {
       this.lastMilestone = Math.floor(state.elapsed / 10);
       this.events.push({ type: 'milestone' });
@@ -159,11 +196,51 @@ export class Simulation {
     this.previousHeld = held;
   }
 
-  private leaveGround(launch: boolean): void {
+  private wheelPoint(longitudinalOffset: number): WheelPoint {
+    const cosine = cos(this.state.angle);
+    const sine = sin(this.state.angle);
+    const xOffset = cosine * longitudinalOffset - sine * WHEEL_VERTICAL_OFFSET;
+    const yOffset = sine * longitudinalOffset + cosine * WHEEL_VERTICAL_OFFSET;
+    const x = this.state.x + xOffset;
+    return {
+      x,
+      yOffset,
+      bottom: this.state.y + yOffset + WHEEL_RADIUS,
+      surface: this.course.surfaceAt(x),
+    };
+  }
+
+  private syncGroundPose(fallback: Surface): void {
+    const state = this.state;
+    const front = this.wheelPoint(WHEELBASE / 2);
+    const rear = this.wheelPoint(-WHEELBASE / 2);
+    let slope = fallback.slope;
+    if (front.surface && rear.surface) {
+      slope = atan2(front.surface.y - rear.surface.y, front.x - rear.x);
+    } else if (front.surface) {
+      slope = front.surface.slope;
+    } else if (rear.surface) {
+      slope = rear.surface.slope;
+    }
+    state.angle += normalizeAngle(slope - state.angle) * 0.2;
+
+    const updatedFront = this.wheelPoint(WHEELBASE / 2);
+    const updatedRear = this.wheelPoint(-WHEELBASE / 2);
+    const centerY: number[] = [];
+    if (updatedFront.surface) centerY.push(updatedFront.surface.y - updatedFront.yOffset - WHEEL_RADIUS);
+    if (updatedRear.surface) centerY.push(updatedRear.surface.y - updatedRear.yOffset - WHEEL_RADIUS);
+    if (centerY.length > 0) {
+      state.y = centerY.reduce((sum, value) => sum + value, 0) / centerY.length;
+    } else {
+      state.y = fallback.y - WHEEL_VERTICAL_OFFSET * cos(state.angle) - WHEEL_RADIUS;
+    }
+  }
+
+  private leaveGround(): void {
     const state = this.state;
     if (!state.grounded) return;
     state.grounded = false;
-    state.vy = launch ? -180 : 0;
+    state.vy = 0;
     state.airtime = 0;
     state.flips = 0;
     this.flipRotation = 0;
@@ -171,23 +248,46 @@ export class Simulation {
     this.events.push({ type: 'takeoff' });
   }
 
+  private bodyCircles(): BodyCircle[] {
+    const cosine = cos(this.state.angle);
+    const sine = sin(this.state.angle);
+    const radius = BODY_RADIUS;
+    return [-CAR_LENGTH * 0.32, 0, CAR_LENGTH * 0.32].map((offset) => ({
+      x: this.state.x + cosine * offset,
+      y: this.state.y + sine * offset,
+      radius,
+    }));
+  }
+
   private checkLanding(): void {
     const state = this.state;
-    const front = this.course.surfaceAt(state.x + CAR_LENGTH * 0.38);
-    const rear = this.course.surfaceAt(state.x - CAR_LENGTH * 0.38);
-    const surface = front ?? rear;
-    if (!surface || state.vy < 0) return;
-    const frontY = front?.y ?? Infinity;
-    const rearY = rear?.y ?? Infinity;
-    const groundY = min(frontY, rearY);
-    if (state.y + CAR_HEIGHT / 2 < groundY - 6) return;
+    if (state.vy < 0) return;
+    const wheels = [this.wheelPoint(WHEELBASE / 2), this.wheelPoint(-WHEELBASE / 2)];
+    const roofContact = this.bodyCircles().some((circle) => {
+      const surface = this.course.surfaceAt(circle.x);
+      return surface
+        && circle.y + circle.radius >= surface.y
+        && Math.abs(normalizeAngle(state.angle - surface.slope)) > LANDING_LIMIT;
+    });
+    if (roofContact) {
+      this.crash('bad-landing');
+      return;
+    }
+
+    const contacts = wheels.filter((wheel) => wheel.surface && wheel.bottom >= wheel.surface.y);
+    if (contacts.length === 0) return;
+    const contact = contacts.reduce((highest, wheel) => (
+      (wheel.surface?.y ?? Infinity) < (highest.surface?.y ?? Infinity) ? wheel : highest
+    ));
+    const surface = contact.surface!;
     const difference = Math.abs(normalizeAngle(state.angle - surface.slope));
     if (difference > LANDING_LIMIT) {
       this.crash('bad-landing');
       return;
     }
+
     state.grounded = true;
-    state.y = groundY - CAR_HEIGHT / 2;
+    state.y = surface.y - contact.yOffset - WHEEL_RADIUS;
     state.vy = 0;
     const quality: LandingQuality = difference <= PERFECT_LIMIT ? 'perfect' : difference <= GREAT_LIMIT ? 'great' : 'clean';
     const oldCombo = state.combo;
@@ -203,24 +303,32 @@ export class Simulation {
     this.flipRotation = 0;
   }
 
+  private bodyBottom(): number {
+    return this.bodyCircles().reduce((bottom, circle) => max(bottom, circle.y + circle.radius), -Infinity);
+  }
+
   private checkNearMisses(): void {
     const state = this.state;
-    const hazards = this.course.hazardsAhead(this.previousX, state.x - this.previousX + CAR_LENGTH);
+    const hazards = this.course.hazardsAhead(this.previousX - CAR_LENGTH / 2, state.x - this.previousX + CAR_LENGTH);
     for (const hazard of hazards) {
       if (state.nearMissIds.includes(hazard.id)) continue;
       if (hazard.kind === 'gap') {
-        const edgeDistance = min(Math.abs(state.x - hazard.x), Math.abs(state.x - hazard.x - hazard.width));
-        if (edgeDistance < NEAR_MISS_CLEARANCE && state.grounded) {
+        const farEdge = hazard.x + hazard.width;
+        if (state.grounded && state.x >= farEdge && state.x - farEdge < NEAR_MISS_CLEARANCE) {
           state.nearMissIds.push(hazard.id);
           state.energy = min(ENERGY_MAX, state.energy + 10);
           awardNearMiss(state.stats, state.combo);
           this.events.push({ type: 'nearMiss', hazardId: hazard.id });
         }
-      } else if (state.x > hazard.x + hazard.width && state.x - (hazard.x + hazard.width) < NEAR_MISS_CLEARANCE && state.y + CAR_HEIGHT / 2 < 520 - hazard.height) {
-        state.nearMissIds.push(hazard.id);
-        state.energy = min(ENERGY_MAX, state.energy + 10);
-        awardNearMiss(state.stats, state.combo);
-        this.events.push({ type: 'nearMiss', hazardId: hazard.id });
+      } else {
+        const distancePast = state.x - (hazard.x + hazard.width);
+        const clearance = hazard.baseY - hazard.height - this.bodyBottom();
+        if (distancePast >= 0 && distancePast < NEAR_MISS_CLEARANCE && clearance >= 0 && clearance < NEAR_MISS_CLEARANCE) {
+          state.nearMissIds.push(hazard.id);
+          state.energy = min(ENERGY_MAX, state.energy + 10);
+          awardNearMiss(state.stats, state.combo);
+          this.events.push({ type: 'nearMiss', hazardId: hazard.id });
+        }
       }
     }
   }
@@ -230,17 +338,29 @@ export class Simulation {
     const hazards = this.course.hazardsAhead(state.x - CAR_LENGTH / 2, CAR_LENGTH);
     for (const hazard of hazards) {
       if (hazard.kind === 'gap') continue;
-      const horizontallyOverlapping = state.x + CAR_LENGTH / 2 > hazard.x && state.x - CAR_LENGTH / 2 < hazard.x + hazard.width;
-      const bottom = state.y + CAR_HEIGHT / 2;
-      const top = state.y - CAR_HEIGHT / 2;
-      if (horizontallyOverlapping && bottom > 520 - hazard.height && top < 520) {
-        this.crash('obstacle');
-        return;
+      const top = hazard.baseY - hazard.height;
+      const right = hazard.x + hazard.width;
+      for (const circle of this.bodyCircles()) {
+        const nearestX = clamp(circle.x, hazard.x, right);
+        const nearestY = clamp(circle.y, top, hazard.baseY);
+        const dx = circle.x - nearestX;
+        const dy = circle.y - nearestY;
+        if (dx * dx + dy * dy < circle.radius * circle.radius) {
+          this.crash('obstacle');
+          return;
+        }
       }
     }
   }
 
-  private crash(reason: string): void {
+  private groundReferenceY(x: number): number {
+    const surface = this.course.surfaceAt(x);
+    if (surface) return surface.y;
+    const gap = this.course.segmentsInRange(x, x).find((segment) => segment.kind === 'gap');
+    return gap ? max(gap.y0, gap.y1) : BASE_Y;
+  }
+
+  private crash(reason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit'): void {
     this.state.crashed = true;
     this.state.crashReason = reason;
     this.state.combo = 0;
