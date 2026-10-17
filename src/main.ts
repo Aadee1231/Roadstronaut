@@ -26,6 +26,13 @@ const game = new Phaser.Game({
   scene: [BootScene, GameScene],
 });
 
+// Phaser's own resize polling can miss viewport changes (e.g. device rotation), leaving a stretched canvas.
+const refreshScale = (): void => { game.scale.refresh(); };
+window.addEventListener('resize', refreshScale);
+window.addEventListener('orientationchange', () => setTimeout(refreshScale, 150));
+const canvasParent = document.getElementById('game-canvas');
+if (canvasParent && 'ResizeObserver' in window) new ResizeObserver(refreshScale).observe(canvasParent);
+
 const root = document.querySelector<HTMLElement>('#ui-root');
 if (!root) throw new Error('UI root is missing');
 new GameUI(root, game);
