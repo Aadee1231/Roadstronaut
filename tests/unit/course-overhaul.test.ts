@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  FIXED_DT, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY,
+  FIXED_DT, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY, MAX_RUN_SECONDS,
   LAUNCH_BOOST, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, SUPER_JUMP_VELOCITY,
   distanceAtTime, speedAtTime, timeAtDistance,
 } from '../../src/sim/constants';
@@ -11,6 +11,9 @@ import { Simulation } from '../../src/sim/simulation';
 const DISTANCE_150_SECONDS = distanceAtTime(150);
 const FAIRNESS_DISTANCE = DISTANCE_150_SECONDS + 10_000;
 const LAUNCH_WINDOW = 0.25;
+const OPENING_RUNWAY_DISTANCE = 1_500;
+const ONBOARDING_END_SECONDS = 12;
+const ONBOARDING_DISTANCE = distanceAtTime(ONBOARDING_END_SECONDS);
 
 function checkFairness(seed: number): void {
   const course = createCourse(seed);
@@ -77,18 +80,28 @@ function checkFairness(seed: number): void {
   }
 }
 
-function eventsPerTenSeconds(course: Course): number[] {
-  const segments = course.segmentsInRange(0, DISTANCE_150_SECONDS);
-  const hazards = course.hazardsAhead(0, DISTANCE_150_SECONDS);
+function eventsPerTenSeconds(course: Course, startSeconds = 0, windowCount = 15): number[] {
+  const endDistance = distanceAtTime(startSeconds + windowCount * 10);
+  const segments = course.segmentsInRange(0, endDistance);
+  const hazards = course.hazardsAhead(0, endDistance);
   const positions = [
     ...segments.filter((segment) => segment.kind !== 'flat' && segment.kind !== 'gap').map((segment) => segment.x0),
     ...hazards.map((hazard) => hazard.x),
   ];
-  return Array.from({ length: 15 }, (_, window) => {
-    const start = distanceAtTime(window * 10);
-    const end = distanceAtTime((window + 1) * 10);
+  return Array.from({ length: windowCount }, (_, window) => {
+    const start = distanceAtTime(startSeconds + window * 10);
+    const end = distanceAtTime(startSeconds + (window + 1) * 10);
     return positions.filter((x) => x >= start && x < end).length;
   });
+}
+
+function firstNoInputCrashTime(seed: number): number {
+  const simulation = new Simulation(seed);
+  const maxTicks = Math.ceil((MAX_RUN_SECONDS + 1) / FIXED_DT);
+  for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+    simulation.step(false);
+  }
+  return simulation.state.elapsed;
 }
 
 function lookaheadJump(simulation: Simulation): boolean {
@@ -212,25 +225,32 @@ describe('contiguous deterministic course generator', () => {
     expect(inOrder.surfaceAt(0)?.y).toBe(BASE_Y);
   });
 
-  it('keeps feature and hazard density in the intended bands', () => {
-    const averages = [0, 0, 0];
-    const windows = [0, 0, 0];
+  it('keeps feature and hazard density in the intended bands after the runway', () => {
+    let earlyLegacyTotal = 0;
+    let earlyAfterRunwayTotal = 0;
+    let midTotal = 0;
+    let lateTotal = 0;
     for (let seed = 0; seed < 40; seed += 1) {
-      const counts = eventsPerTenSeconds(createCourse(seed));
-      for (let index = 0; index < counts.length; index += 1) {
-        const band = index < 3 ? 0 : index < 9 ? 1 : 2;
-        averages[band] += counts[index];
-        windows[band] += 1;
-      }
+      const course = createCourse(seed);
+      earlyLegacyTotal += eventsPerTenSeconds(course, 0, 3).reduce((sum, value) => sum + value, 0);
+      earlyAfterRunwayTotal += eventsPerTenSeconds(course, 4, 2).reduce((sum, value) => sum + value, 0);
+      midTotal += eventsPerTenSeconds(course, 30, 6).reduce((sum, value) => sum + value, 0);
+      lateTotal += eventsPerTenSeconds(course, 90, 6).reduce((sum, value) => sum + value, 0);
     }
-    const perWindow = averages.map((total, band) => total / windows[band]);
-    console.info(`course features + hazards per 10s: early ${perWindow[0].toFixed(2)}, mid ${perWindow[1].toFixed(2)}, late ${perWindow[2].toFixed(2)}`);
-    expect(perWindow[0]).toBeGreaterThanOrEqual(3.5);
-    expect(perWindow[0]).toBeLessThanOrEqual(12);
-    expect(perWindow[1]).toBeGreaterThanOrEqual(4);
-    expect(perWindow[1]).toBeLessThanOrEqual(16);
-    expect(perWindow[2]).toBeGreaterThanOrEqual(5);
-    expect(perWindow[2]).toBeLessThanOrEqual(22);
+    const earlyLegacy = earlyLegacyTotal / (40 * 3);
+    const earlyAfterRunway = earlyAfterRunwayTotal / (40 * 2);
+    const mid = midTotal / (40 * 6);
+    const late = lateTotal / (40 * 6);
+    console.info(
+      `course features + hazards per 10s: early 0–30s ${earlyLegacy.toFixed(2)}, `
+      + `after runway 4–24s ${earlyAfterRunway.toFixed(2)}, mid ${mid.toFixed(2)}, late ${late.toFixed(2)}`,
+    );
+    expect(earlyAfterRunway).toBeGreaterThanOrEqual(3.5);
+    expect(earlyAfterRunway).toBeLessThanOrEqual(12);
+    expect(mid).toBeGreaterThanOrEqual(4);
+    expect(mid).toBeLessThanOrEqual(16);
+    expect(late).toBeGreaterThanOrEqual(5);
+    expect(late).toBeLessThanOrEqual(22);
   });
 
   it('generates every briefed pattern family across seeded courses', () => {
@@ -269,6 +289,68 @@ describe('contiguous deterministic course generator', () => {
 });
 
 describe('procedural gameplay fairness', () => {
+  it('keeps the opening safe and spaces onboarding hazards across 200 seeds', () => {
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const course = createCourse(seed);
+      const runwaySegments = course.segmentsInRange(0, OPENING_RUNWAY_DISTANCE)
+        .filter((segment) => segment.x0 < OPENING_RUNWAY_DISTANCE);
+      const runwayHazards = course.hazardsAhead(0, OPENING_RUNWAY_DISTANCE)
+        .filter((hazard) => hazard.x < OPENING_RUNWAY_DISTANCE);
+      expect(runwaySegments.every((segment) => ['flat', 'slope', 'kicker'].includes(segment.kind))).toBe(true);
+      expect(runwayHazards).toEqual([]);
+
+      const onboardingSegments = course.segmentsInRange(0, ONBOARDING_DISTANCE);
+      const onboardingHazards = course.hazardsAhead(0, ONBOARDING_DISTANCE);
+      expect(onboardingSegments.every((segment) => (
+        ['flat', 'slope', 'kicker', 'launch', 'gap'].includes(segment.kind)
+      ))).toBe(true);
+      const onboardingLaunches = onboardingSegments.filter(
+        (segment) => segment.kind === 'launch' && timeAtDistance(segment.x0) < ONBOARDING_END_SECONDS,
+      );
+      expect(onboardingSegments.some((segment) => segment.kind === 'platform')).toBe(false);
+      expect(onboardingLaunches.length).toBeLessThanOrEqual(1);
+      for (const launch of onboardingLaunches) {
+        const landingSegment = onboardingSegments.find((segment) => segment.x0 === launch.x1);
+        expect(landingSegment?.kind).not.toBe('gap');
+      }
+
+      for (let index = 1; index < onboardingHazards.length; index += 1) {
+        const previous = onboardingHazards[index - 1];
+        const current = onboardingHazards[index];
+        if (timeAtDistance(current.x) < ONBOARDING_END_SECONDS) {
+          expect(timeAtDistance(current.x) - timeAtDistance(previous.x)).toBeGreaterThanOrEqual(1.8);
+        }
+        if (current.kind === 'gap') {
+          expect(current.width).toBeLessThanOrEqual(current.safeJumpReach * 0.55);
+        }
+        const adjacent = current.x - previous.x - previous.width <= previous.minSpacing + 1;
+        expect(
+          adjacent && previous.kind !== 'gap',
+          `${previous.id} → ${current.id} is not an obstacle combo`,
+        ).toBe(false);
+      }
+
+      const firstHazard = course.hazardsAhead(0, distanceAtTime(60))[0];
+      expect(firstHazard, `seed ${seed} has a generated first hazard`).toBeDefined();
+      expect(firstHazard?.x, `seed ${seed} first hazard starts after the runway`).toBeGreaterThanOrEqual(
+        OPENING_RUNWAY_DISTANCE,
+      );
+    }
+  }, 120_000);
+
+  it('keeps no-input first crashes at or after three seconds for 300 seeds', () => {
+    const crashTimes = Array.from({ length: 300 }, (_, index) => firstNoInputCrashTime(index + 1));
+    const sorted = [...crashTimes].sort((left, right) => left - right);
+    const minimum = sorted[0];
+    const p10 = sorted[Math.ceil(sorted.length * 0.1) - 1];
+    const median = (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+    console.info(
+      `no-input first crash times (seeds 1–300): min ${minimum.toFixed(2)}s, `
+      + `p10 ${p10.toFixed(2)}s, median ${median.toFixed(2)}s`,
+    );
+    expect(minimum).toBeGreaterThanOrEqual(3);
+  }, 120_000);
+
   it('lets a no-flip lookahead bot survive 150 seconds on 200 seeds', () => {
     const failures: string[] = [];
     const features = new Set<string>();

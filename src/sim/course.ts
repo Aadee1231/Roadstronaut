@@ -40,6 +40,9 @@ type Pattern = 'hill' | 'kicker' | 'obstacle' | 'gap' | 'platform' | 'double' | 
 type WeightedPattern = readonly [Pattern, number];
 
 const PLAIN_AIRTIME = -2 * JUMP_VELOCITY / GRAVITY;
+const OPENING_RUNWAY_DISTANCE = 1_500;
+const ONBOARDING_END_SECONDS = 12;
+const ONBOARDING_HAZARD_SPACING_SECONDS = 1.8;
 
 function difficultyBand(time: number): 0 | 1 | 2 | 3 {
   if (time < 12) return 0;
@@ -71,7 +74,11 @@ export class Course {
   }
 
   private spacingAtX(x: number): number {
-    return this.reachAtX(x) + this.speedAtX(x) * HAZARD_RECOVERY_SECONDS;
+    const speed = this.speedAtX(x);
+    const safeSpacing = this.reachAtX(x) + speed * HAZARD_RECOVERY_SECONDS;
+    return timeAtDistance(x) < ONBOARDING_END_SECONDS
+      ? max(safeSpacing, speed * ONBOARDING_HAZARD_SPACING_SECONDS)
+      : safeSpacing;
   }
 
   private nextHazardX(preferred: number): number {
@@ -154,6 +161,13 @@ export class Course {
 
   private generateNextPattern(): void {
     const time = timeAtDistance(this.x);
+    if (this.x < OPENING_RUNWAY_DISTANCE) {
+      if (this.rng.next() < 0.5) this.generateHill();
+      else this.generateKicker();
+      this.appendBreather();
+      return;
+    }
+
     if (time >= 10 && this.x >= this.nextLaunchAt) {
       const overGap = time >= 30 && this.rng.next() < 0.42;
       this.generateLaunch(overGap);
