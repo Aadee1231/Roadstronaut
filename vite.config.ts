@@ -1,8 +1,8 @@
 import { defineConfig } from 'vitest/config';
-import { thrustshiftApiPlugin } from './server/vitePlugin';
+import { roadstronautApiPlugin } from './server/vitePlugin';
 
 export default defineConfig({
-  plugins: [thrustshiftApiPlugin()],
+  plugins: [roadstronautApiPlugin()],
   server: { host: '0.0.0.0', port: 5173, strictPort: true },
   build: { outDir: 'dist', sourcemap: false },
   test: {

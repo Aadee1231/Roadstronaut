@@ -25,7 +25,7 @@ const SOUND: Record<string, string> = {
 
 declare global {
   interface Window {
-    __thrustshiftAudio?: { playing(): string[] };
+    __roadstronautAudio?: { playing(): string[] };
   }
 }
 
@@ -59,10 +59,10 @@ export class AudioManager {
   }
 
   constructor(private readonly events: Phaser.Events.EventEmitter) {
-    try { this.muted = localStorage.getItem('thrustshift.muted') === 'true'; } catch { this.muted = false; }
+    try { this.muted = localStorage.getItem('roadstronaut.muted') === 'true'; } catch { this.muted = false; }
     this.registerUnlockListeners();
     document.addEventListener('visibilitychange', this.onVisibilityChange);
-    window.__thrustshiftAudio = this.debugHook;
+    window.__roadstronautAudio = this.debugHook;
     this.events.on('run-start', () => {
       this.runPaused = false;
       this.stopLoops();
@@ -103,7 +103,7 @@ export class AudioManager {
     this.currentMusic?.pause();
     this.stopLoops();
     this.stopActiveEffects();
-    if (window.__thrustshiftAudio === this.debugHook) delete window.__thrustshiftAudio;
+    if (window.__roadstronautAudio === this.debugHook) delete window.__roadstronautAudio;
   }
 
   setMuted(muted: boolean): void {

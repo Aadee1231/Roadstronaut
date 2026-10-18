@@ -39,7 +39,7 @@ new GameUI(root, game);
 new AudioManager(game.events);
 
 if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) {
-  Object.defineProperty(window, '__thrust', {
+  Object.defineProperty(window, '__roadstronaut', {
     configurable: true,
     get: () => {
       const scene = game.scene.getScene('game') as GameScene | undefined;

@@ -13,4 +13,4 @@
 - **Supabase JavaScript client** — MIT License; used by server-side code only.
 - **Vite**, **Vitest**, and **Playwright** — open-source development/build/test tools; see their package licenses for details.
 
-THRUSTSHIFT is an unofficial fan-inspired game and is not affiliated with any automaker.
+ROADSTRONAUT is an unofficial fan-inspired game and is not affiliated with any automaker.

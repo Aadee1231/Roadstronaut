@@ -24,8 +24,8 @@ interface RunTokenPayload {
 const BODY_LIMIT = 800_000;
 const INPUT_LOG_LIMIT = 700_000;
 const RATE_WINDOW_MS = 60_000;
-const DEV_TOKEN_SECRET = 'thrustshift-local-dev-only-token-secret';
-const DEV_IP_SALT = 'thrustshift-local-dev-only-ip-salt';
+const DEV_TOKEN_SECRET = 'roadstronaut-local-dev-only-token-secret';
+const DEV_IP_SALT = 'roadstronaut-local-dev-only-ip-salt';
 
 function response(mode: BackendMode, status: number, body: Record<string, unknown>): HandlerResponse {
   return {
