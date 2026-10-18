@@ -114,6 +114,21 @@ export function drawStructures(ctx: CanvasRenderingContext2D, w: number, h: numb
       ctx.beginPath(); ctx.moveTo(tx + 2, y); ctx.lineTo(tx + 38, y - 22); ctx.moveTo(tx + 38, y); ctx.lineTo(tx + 2, y - 22); ctx.stroke();
     }
     ctx.fillRect(tx + 4, h - th - 8, 32, 8);
+    if (i % 2 === 1) {
+      // Original vertical test stand: generic rocket held by service arms beside the lattice tower.
+      const rx = tx + 64;
+      const rh = th * 0.82;
+      const base = h - 14;
+      ctx.fillRect(rx - 9, base - rh, 18, rh);
+      ctx.beginPath(); ctx.moveTo(rx - 9, base - rh); ctx.quadraticCurveTo(rx - 8, base - rh - 26, rx, base - rh - 34); ctx.quadraticCurveTo(rx + 8, base - rh - 26, rx + 9, base - rh); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(rx - 9, base - 30); ctx.lineTo(rx - 18, base); ctx.lineTo(rx - 9, base); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(rx + 9, base - 30); ctx.lineTo(rx + 18, base); ctx.lineTo(rx + 9, base); ctx.fill();
+      ctx.fillRect(rx - 26, h - 14, 52, 14);
+      ctx.lineWidth = 2;
+      for (const f of [0.35, 0.7]) {
+        ctx.beginPath(); ctx.moveTo(tx + 38, base - rh * f); ctx.lineTo(rx - 9, base - rh * f); ctx.stroke();
+      }
+    }
     const dx = ox + seg * 0.55;
     const dy = h - h * 0.3;
     ctx.fillRect(dx - 3, dy, 6, h * 0.3);
