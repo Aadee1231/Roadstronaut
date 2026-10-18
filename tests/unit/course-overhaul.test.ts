@@ -609,6 +609,7 @@ describe('procedural gameplay fairness', () => {
 
   it('keeps 2,000 deterministic input policies alive and aligned through rail zones', () => {
     let runs = 0;
+    let runsWithRecovery = 0;
     let recoveryTriggers = 0;
     let landingContacts = 0;
     let minimumMargin = Infinity;
@@ -667,6 +668,7 @@ describe('procedural gameplay fairness', () => {
         let held = false;
         let policyStarted = false;
         let ticksUntilToggle = Number.POSITIVE_INFINITY;
+        let runTriggeredRecovery = false;
         const maxTicks = Math.ceil(8 / FIXED_DT);
         for (let tick = 0; tick < maxTicks && state.x <= zone!.x1 && !state.crashed; tick += 1) {
           const inZone = state.x >= zone!.x0;
@@ -685,7 +687,10 @@ describe('procedural gameplay fairness', () => {
           const xBeforeStep = state.x;
           simulation.step(inZone ? held : lookaheadJump(simulation));
           if (inZone && policy >= 2 && policyStarted) ticksUntilToggle -= 1;
-          if (simulation.events.some((event) => event.type === 'railRecovery')) recoveryTriggers += 1;
+          if (simulation.events.some((event) => event.type === 'railRecovery')) {
+            recoveryTriggers += 1;
+            runTriggeredRecovery = true;
+          }
           expect(
             state.crashed && state.x >= zone!.x0 && state.x <= zone!.x1,
             `seed ${seed}, policy ${policy} crashes inside rail zone at ${state.x.toFixed(1)}`,
@@ -707,12 +712,14 @@ describe('procedural gameplay fairness', () => {
             }
           }
         }
+        if (runTriggeredRecovery) runsWithRecovery += 1;
         expect(state.x, `seed ${seed}, policy ${policy} passes rail-zone end`).toBeGreaterThanOrEqual(zone!.x1);
       }
     }
 
     console.info(
-      `rail-recovery fuzz: ${runs} runs, ${recoveryTriggers} triggers, `
+      `rail-recovery fuzz: ${runs} runs, ${runsWithRecovery} triggered recovery `
+      + `(${recoveryTriggers} events), `
       + `${landingContacts} rail contacts, minimum angle margin ${(minimumMargin * 180 / Math.PI).toFixed(3)}°`,
     );
     expect(runs).toBe(2_000);
