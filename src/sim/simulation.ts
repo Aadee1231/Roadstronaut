@@ -6,7 +6,7 @@ import {
   LANDING_LIMIT, LAUNCH_BOOST, LAUNCH_WINDOW_FRACTION,
   MIN_AUTO_TAKEOFF_VELOCITY, MIN_REWARD_AIRTIME, MAX_ANGULAR_SPEED, MAX_RUN_SECONDS,
   NEAR_MISS_CLEARANCE, PERFECT_LIMIT, ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND,
-  SUCTION_ALIGN, SUCTION_POINTS_PER_SECOND,
+  RECOVERY_ANGULAR_SPEED, RECOVERY_MARGIN, SUCTION_ALIGN, SUCTION_POINTS_PER_SECOND,
   SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
 } from './constants';
@@ -24,6 +24,7 @@ export type SimEvent =
   | { type: 'touchdown' }
   | { type: 'hardLanding' }
   | { type: 'thrusterBurst' }
+  | { type: 'railRecovery' }
   | { type: 'suctionEngage' }
   | { type: 'suctionRelease'; reason: 'end' | 'empty' }
   | { type: 'suctionBonus'; seconds: number; points: number }
@@ -46,6 +47,7 @@ export interface SimulationState {
   fanRailVisible: boolean;
   grounded: boolean;
   rotating: boolean;
+  recovering: boolean;
   crashed: boolean;
   crashReason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' | null;
   elapsed: number;
@@ -89,6 +91,8 @@ export class Simulation {
   private previousBodyTop = Infinity;
   private attachedCeiling: CeilingSegment | null = null;
   private suctionBonusElapsed = 0;
+  private recovering = false;
+  private recoveryTarget = 0;
 
   constructor(seed: number) {
     this.course = createCourse(seed);
@@ -109,6 +113,7 @@ export class Simulation {
       fanRailVisible: false,
       grounded: true,
       rotating: false,
+      recovering: false,
       crashed: false,
       crashReason: null,
       elapsed: 0,
@@ -186,6 +191,7 @@ export class Simulation {
         this.flipRotation = 0;
         this.airbornePressEligible = false;
         this.rewardedLandingThisAirbornePhase = false;
+        this.clearRailRecovery();
         state.burstsLeft = BURST_COUNT_PER_AIR_PHASE;
         state.burstCooldown = 0;
         if (launchWindow) {
@@ -216,7 +222,8 @@ export class Simulation {
     } else if (state.inverted) {
       this.stepSuction(dt);
     } else {
-      if (newPress) {
+      this.maybeStartRailRecovery();
+      if (!this.recovering && newPress) {
         this.airbornePressEligible = true;
         if (state.burstsLeft > 0 && state.burstCooldown === 0 && state.energy >= BURST_ENERGY) {
           state.energy -= BURST_ENERGY;
@@ -232,25 +239,29 @@ export class Simulation {
       state.vy += GRAVITY * dt;
       state.y += state.vy * dt;
 
-      const canRotate = held && this.airbornePressEligible && state.energy >= ROTATION_ENERGY_PER_SECOND * dt;
-      if (canRotate) {
-        state.rotating = true;
-        state.angularVelocity = min(MAX_ANGULAR_SPEED, state.angularVelocity + ROTATION_ACCEL * dt);
-        state.energy = max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
-        if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
+      if (this.recovering) {
+        this.stepRailRecovery(dt);
       } else {
-        state.angularVelocity *= RELEASE_DAMPING_PER_STEP;
-        if (Math.abs(normalizeAngle(state.angle)) < 0.55) {
-          state.angularVelocity += -normalizeAngle(state.angle) * 0.35 * dt;
+        const canRotate = held && this.airbornePressEligible && state.energy >= ROTATION_ENERGY_PER_SECOND * dt;
+        if (canRotate) {
+          state.rotating = true;
+          state.angularVelocity = min(MAX_ANGULAR_SPEED, state.angularVelocity + ROTATION_ACCEL * dt);
+          state.energy = max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
+          if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
+        } else {
+          state.angularVelocity *= RELEASE_DAMPING_PER_STEP;
+          if (Math.abs(normalizeAngle(state.angle)) < 0.55) {
+            state.angularVelocity += -normalizeAngle(state.angle) * 0.35 * dt;
+          }
         }
-      }
-      state.angle += state.angularVelocity * dt;
-      this.flipRotation += max(0, state.angularVelocity * dt);
-      const fullFlips = Math.floor(this.flipRotation / (Math.PI * 2));
-      if (fullFlips > state.flips) {
-        state.energy = min(ENERGY_MAX, state.energy + (fullFlips - state.flips) * 10);
-        state.flips = fullFlips;
-        this.events.push({ type: 'flipComplete', count: state.flips });
+        state.angle += state.angularVelocity * dt;
+        this.flipRotation += max(0, state.angularVelocity * dt);
+        const fullFlips = Math.floor(this.flipRotation / (Math.PI * 2));
+        if (fullFlips > state.flips) {
+          state.energy = min(ENERGY_MAX, state.energy + (fullFlips - state.flips) * 10);
+          state.flips = fullFlips;
+          this.events.push({ type: 'flipComplete', count: state.flips });
+        }
       }
       this.checkCeilingContact();
       if (!state.inverted && !state.crashed && !this.checkPitFall()) this.checkLanding();
@@ -322,6 +333,7 @@ export class Simulation {
     this.flipRotation = 0;
     this.airbornePressEligible = false;
     this.rewardedLandingThisAirbornePhase = false;
+    this.clearRailRecovery();
     state.burstsLeft = BURST_COUNT_PER_AIR_PHASE;
     state.burstCooldown = 0;
     this.events.push({ type: 'takeoff' });
@@ -342,6 +354,80 @@ export class Simulation {
     return this.bodyCircles().reduce((top, circle) => min(top, circle.y - circle.radius), Infinity);
   }
 
+  private maybeStartRailRecovery(): void {
+    const state = this.state;
+    if (state.grounded || state.inverted || this.recovering) return;
+    if (!this.course.railZoneAt(state.x)) return;
+
+    const surface = this.course.surfaceAt(state.x);
+    const wheels = [this.wheelPoint(WHEELBASE / 2), this.wheelPoint(-WHEELBASE / 2)];
+    const lowestWheelBottom = max(wheels[0].bottom, wheels[1].bottom);
+    const height = surface ? surface.y - lowestWheelBottom : Number.NaN;
+    const solveTimeToGround = (distance: number): number | null => {
+      const discriminant = state.vy * state.vy + 2 * GRAVITY * distance;
+      if (!Number.isFinite(discriminant) || discriminant < 0) return null;
+      const solved = (-state.vy + Math.sqrt(discriminant)) / GRAVITY;
+      return Number.isFinite(solved) && solved >= 0 ? solved : null;
+    };
+    const currentSlope = surface?.slope ?? 0;
+    let timeToGround = solveTimeToGround(height);
+    let targetSlope = timeToGround === null
+      ? currentSlope
+      : this.course.surfaceAt(state.x + state.vx * timeToGround)?.slope ?? currentSlope;
+    let immediateWheelSurface: Surface | null = null;
+    for (const wheel of wheels) {
+      const wheelSurface = wheel.surface;
+      if (!wheelSurface) continue;
+      const wheelTime = solveTimeToGround(wheelSurface.y - wheel.bottom);
+      if (wheelTime === null) {
+        if (wheel.bottom >= wheelSurface.y
+          && (immediateWheelSurface === null || wheelSurface.y < immediateWheelSurface.y)) {
+          immediateWheelSurface = wheelSurface;
+        }
+        continue;
+      }
+      if (timeToGround !== null && wheelTime >= timeToGround) continue;
+      timeToGround = wheelTime;
+      const predictedWheelX = wheel.x + state.vx * wheelTime;
+      targetSlope = this.course.surfaceAt(predictedWheelX)?.slope ?? wheelSurface.slope;
+    }
+    if (immediateWheelSurface !== null) {
+      timeToGround = 0;
+      targetSlope = immediateWheelSurface.slope;
+    }
+    const angleOff = Math.abs(normalizeAngle(state.angle - targetSlope));
+    if (angleOff <= LANDING_LIMIT * 0.75) return;
+    const immediate = timeToGround === null || timeToGround <= RECOVERY_MARGIN;
+    const tooLate = state.vy > 0
+      && timeToGround !== null
+      && timeToGround <= angleOff / RECOVERY_ANGULAR_SPEED + RECOVERY_MARGIN;
+    if (!immediate && !tooLate) return;
+
+    this.recovering = true;
+    this.recoveryTarget = targetSlope;
+    state.recovering = true;
+    state.flips = 0;
+    this.flipRotation = 0;
+    this.events.push({ type: 'railRecovery' });
+  }
+
+  private stepRailRecovery(dt: number): void {
+    const delta = normalizeAngle(this.recoveryTarget - this.state.angle);
+    if (Math.abs(delta) <= RECOVERY_ANGULAR_SPEED * dt) {
+      this.state.angle = this.recoveryTarget;
+      this.state.angularVelocity = 0;
+      return;
+    }
+    this.state.angularVelocity = Math.sign(delta) * RECOVERY_ANGULAR_SPEED;
+    this.state.angle += this.state.angularVelocity * dt;
+  }
+
+  private clearRailRecovery(): void {
+    this.recovering = false;
+    this.recoveryTarget = 0;
+    this.state.recovering = false;
+  }
+
   private checkCeilingContact(): void {
     const state = this.state;
     const ceiling = this.course.ceilingAt(state.x);
@@ -358,6 +444,7 @@ export class Simulation {
 
     const aligned = Math.abs(normalizeAngle(state.angle - Math.PI)) <= SUCTION_ALIGN;
     if (crossedWheel && aligned && state.fan >= 5) {
+      this.clearRailRecovery();
       state.inverted = true;
       state.angle = Math.PI;
       state.angularVelocity = 0;
@@ -414,6 +501,7 @@ export class Simulation {
 
   private checkLanding(): void {
     const state = this.state;
+    const recovering = this.recovering;
     if (state.vy < 0) return;
     const wheels = [this.wheelPoint(WHEELBASE / 2), this.wheelPoint(-WHEELBASE / 2)];
     const roofContact = this.bodyCircles().some((circle) => {
@@ -422,7 +510,7 @@ export class Simulation {
         && circle.y + circle.radius >= surface.y
         && Math.abs(normalizeAngle(state.angle - surface.slope)) > LANDING_LIMIT;
     });
-    if (roofContact) {
+    if (roofContact && !recovering) {
       this.crash('bad-landing');
       return;
     }
@@ -431,7 +519,7 @@ export class Simulation {
     const contacts = wheels.filter((wheel, index) => (
       wheel.surface
       && wheel.bottom >= wheel.surface.y
-      && this.previousWheelBottoms[index]! <= wheel.surface.y + snapLimit
+      && (recovering || this.previousWheelBottoms[index]! <= wheel.surface.y + snapLimit)
     ));
     if (contacts.length === 0) return;
     const contact = contacts.reduce((highest, wheel) => (
@@ -439,23 +527,39 @@ export class Simulation {
     ));
     const surface = contact.surface!;
     const difference = Math.abs(normalizeAngle(state.angle - surface.slope));
-    if (difference > LANDING_LIMIT) {
+    if (difference > LANDING_LIMIT && !recovering) {
       this.crash('bad-landing');
       return;
     }
     const impactSpeed = Math.abs(-state.vx * sin(surface.slope) + state.vy * cos(surface.slope));
-    if (impactSpeed > CRASH_IMPACT) {
+    if (impactSpeed > CRASH_IMPACT && !recovering) {
       this.crash('bad-landing');
       return;
     }
 
     state.grounded = true;
-    state.y = surface.y - contact.yOffset - WHEEL_RADIUS;
     state.vy = 0;
+    if (recovering) {
+      state.angle = surface.slope;
+      state.angularVelocity = 0;
+      const alignedWheels = [this.wheelPoint(WHEELBASE / 2), this.wheelPoint(-WHEELBASE / 2)]
+        .filter((wheel) => wheel.surface);
+      const centerY = alignedWheels.map((wheel) => wheel.surface!.y - wheel.yOffset - WHEEL_RADIUS);
+      state.y = centerY.length > 0
+        ? centerY.reduce((sum, value) => sum + value, 0) / centerY.length
+        : surface.y - WHEEL_VERTICAL_OFFSET * cos(state.angle) - WHEEL_RADIUS;
+      state.flips = 0;
+      this.flipRotation = 0;
+      this.events.push({ type: 'touchdown' });
+      this.clearRailRecovery();
+      return;
+    }
+    state.y = surface.y - contact.yOffset - WHEEL_RADIUS;
     if (this.rewardedLandingThisAirbornePhase || (state.airtime < MIN_REWARD_AIRTIME && state.flips === 0)) {
       this.events.push({ type: 'touchdown' });
       state.flips = 0;
       this.flipRotation = 0;
+      this.clearRailRecovery();
       return;
     }
     this.rewardedLandingThisAirbornePhase = true;
@@ -475,6 +579,7 @@ export class Simulation {
     this.events.push({ type: 'land', quality, flips: state.flips, airtime: state.airtime, points });
     state.flips = 0;
     this.flipRotation = 0;
+    this.clearRailRecovery();
   }
 
   private bodyBottom(): number {
@@ -561,6 +666,7 @@ export class Simulation {
     this.state.crashed = true;
     this.state.crashReason = reason;
     this.state.combo = 0;
+    this.clearRailRecovery();
     this.events.push({ type: 'crash', reason });
   }
 

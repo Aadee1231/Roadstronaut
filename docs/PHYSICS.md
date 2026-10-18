@@ -86,3 +86,15 @@ launch. Fan rails span `0.95 ×` the speed at their start, over a safe flat floo
 their quarter-pipe approach and down-sloping landing ramp remain deterministic
 course geometry. The fixed-step simulation owns all contact and movement
 outcomes, while renderers may interpolate but must not alter state.
+
+## Rail auto-recovery
+
+Inside a suction rail zone, a descending car that remains misaligned near its
+predicted landing is automatically rotated toward the landing slope at
+`RECOVERY_ANGULAR_SPEED`. A recovery landing is a safe, unrewarded touchdown;
+players who align before the recovery threshold retain normal landing rewards.
+
+| Constant | Value | Purpose |
+| --- | ---: | --- |
+| `RECOVERY_ANGULAR_SPEED` | `10 rad/s` | Constant angular speed used to right the car. |
+| `RECOVERY_MARGIN` | `0.12 s` | Additional time margin used to decide when correction must start. |

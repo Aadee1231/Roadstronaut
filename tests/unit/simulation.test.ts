@@ -177,6 +177,7 @@ describe('simulation input and replay', () => {
     expect(hard.state.stats.perfects).toBe(0);
 
     const crash = makeFalling(CRASH_IMPACT + 50);
+    expect(crash.course.railZoneAt(crash.state.x)).toBeNull();
     crash.step(false);
     expect(crash.state.crashed).toBe(true);
     expect(crash.state.crashReason).toBe('bad-landing');

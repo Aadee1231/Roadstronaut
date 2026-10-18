@@ -144,7 +144,7 @@ export class GameUI {
         <div class="howto-row"><span class="control-key">SPACE<br>↑<br>TAP</span><div><b>JUMP THE LINE</b><p>Tap to jump gaps and hazards. Catch a glowing launch ramp for extra airtime.</p></div></div>
         <div class="howto-row"><span class="control-key">AIR<br>TAP + HOLD</span><div><b>BURST & FLIP</b><p>A fresh tap in the air fires a cold-gas burst. Keep holding to rotate; release to level out.</p></div></div>
         <div class="howto-row"><span class="control-key">RELEASE</span><div><b>STICK THE LANDING</b><p>Let go to stabilize. Hit the ground level for a perfect landing bonus.</p></div></div>
-        <div class="howto-row"><span class="control-key">STAY LOW<br>HALF-FLIP</span><div><b>BEAMS & FAN RAILS</b><p>Stay low under overhead beams. Aim upside down to engage suction rails, then half-flip to land upright.</p></div></div>
+        <div class="howto-row"><span class="control-key">STAY LOW<br>HALF-FLIP</span><div><b>BEAMS & FAN RAILS</b><p>Stay low under overhead beams. Aim upside down to engage suction rails, then half-flip to land upright. Miss the rail? Thrusters auto-right the car.</p></div></div>
         <div class="howto-note"><span>⚡</span> Thruster energy refills on the ground. Clean jumps beat reckless flips.</div>
         <button class="button button-primary" data-action="close-panel">GOT IT</button>
       </section>
@@ -388,8 +388,9 @@ export class GameUI {
       const landingFeedback = landingLabels.get(eventIndex);
       const label = landingFeedback?.label
         ?? (event.type === 'nearMiss' ? 'NEAR MISS'
-          : event.type === 'superLaunch' ? 'SUPER LAUNCH'
+            : event.type === 'superLaunch' ? 'SUPER LAUNCH'
             : event.type === 'suctionEngage' ? 'SUCTION ENGAGED'
+              : event.type === 'railRecovery' ? 'AUTO-RECOVER'
               : event.type === 'thrusterBurst' ? 'THRUSTER BURST'
                 : event.type === 'crash' ? 'RUN ENDED' : '');
       if (!label) return;

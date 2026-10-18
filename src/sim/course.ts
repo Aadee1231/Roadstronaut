@@ -40,6 +40,12 @@ export interface CeilingSegment {
   y: number;
 }
 
+export interface RailZone {
+  ceiling: CeilingSegment;
+  x0: number;
+  x1: number;
+}
+
 export interface Surface {
   y: number;
   slope: number;
@@ -78,6 +84,7 @@ export class Course {
   private readonly segments: CourseSegment[] = [];
   private readonly hazards: Hazard[] = [];
   private readonly ceilings: CeilingSegment[] = [];
+  private readonly railZones: RailZone[] = [];
   private x = 0;
   private y = BASE_Y;
   private protectedUntil = 0;
@@ -512,6 +519,7 @@ export class Course {
     const speed = this.speedAtX(this.x);
     const startY = this.y;
     this.appendFlat(speed * 0.45);
+    const x0 = this.x;
     this.appendSegment('quarter', speed * 0.3, startY - 24);
     this.appendSegment('quarter', speed * 0.3, startY - 64);
     this.appendSegment('quarter', speed * 0.12, startY - 190);
@@ -519,15 +527,17 @@ export class Course {
     const lipY = this.y;
     this.appendSegment('slope', speed * 0.3, BASE_Y - 40);
     const railLength = speed * 0.95;
-    this.ceilings.push({
+    const ceiling: CeilingSegment = {
       id: `ceiling-${this.ceilings.length}`,
       x0: this.x,
       x1: this.x + railLength,
       y: lipY - 230,
-    });
+    };
+    this.ceilings.push(ceiling);
     this.appendFlat(railLength);
     this.appendSegment('slope', speed * 0.25, BASE_Y);
     this.protectedUntil = this.x;
+    this.railZones.push({ ceiling, x0, x1: this.protectedUntil });
   }
 
   private ensureThrough(x: number): void {
@@ -610,6 +620,12 @@ export class Course {
 
   ceilingAt(x: number): CeilingSegment | null {
     return this.ceilingsInRange(x, x).find((ceiling) => x >= ceiling.x0 && x <= ceiling.x1) ?? null;
+  }
+
+  railZoneAt(x: number): RailZone | null {
+    this.ensureThrough(x);
+    const zone = this.railZones.find((candidate) => x >= candidate.x0 && x <= candidate.x1);
+    return zone ? { ...zone, ceiling: { ...zone.ceiling } } : null;
   }
 }
 

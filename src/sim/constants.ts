@@ -33,6 +33,10 @@ export const FAN_DRAIN = 45;
 export const FAN_GROUNDED_REFILL = 30;
 export const SUCTION_ALIGN = Math.PI / 3;
 export const SUCTION_POINTS_PER_SECOND = 150;
+/** Maximum angular correction speed during rail auto-recovery. */
+export const RECOVERY_ANGULAR_SPEED = 10;
+/** Starts rail auto-recovery this long before predicted ground contact. */
+export const RECOVERY_MARGIN = 0.12;
 export const LANDING_LIMIT = 38 * Math.PI / 180;
 export const PERFECT_LIMIT = 7 * Math.PI / 180;
 export const GREAT_LIMIT = 16 * Math.PI / 180;

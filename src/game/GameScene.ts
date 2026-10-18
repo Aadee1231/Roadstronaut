@@ -331,6 +331,7 @@ export class GameScene extends Phaser.Scene {
           this.exhaust.explode(14, state.x, state.y);
           break;
         case 'thrusterBurst':
+        case 'railRecovery':
           this.flameTimer = Math.max(this.flameTimer, 0.22);
           this.exhaust.explode(18, rear.x, rear.y - CAR_HEIGHT / 2);
           cam.shake(70, 0.0018);
@@ -677,7 +678,7 @@ export class GameScene extends Phaser.Scene {
     for (const w of this.wheels) w.setRotation(this.wheelSpin);
     this.flameTimer = Math.max(0, this.flameTimer - dt);
     const rotating = state.rotating && !state.crashed;
-    const burning = rotating || this.flameTimer > 0;
+    const burning = rotating || state.recovering || this.flameTimer > 0;
     const flicker = 0.85 + 0.15 * Math.sin(this.time.now * 0.09);
     this.flame.setVisible(burning).setScale((rotating ? 0.75 : 0.55) * flicker * K * 1.6, (0.7 + 0.15 * flicker) * K * 1.6);
     this.flameGlow.setAlpha(burning ? 0.85 : 0.25).setScale(burning ? 0.7 : 0.3);

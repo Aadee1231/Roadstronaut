@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CAR_LENGTH, FIXED_DT, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY, MAX_RUN_SECONDS,
+  CAR_HEIGHT, CAR_LENGTH, FIXED_DT, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY, LANDING_LIMIT, MAX_RUN_SECONDS,
   FAN_MAX, LAUNCH_BOOST, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, SUPER_JUMP_VELOCITY,
+  SNAP_TOLERANCE, WHEELBASE, WHEEL_RADIUS,
   distanceAtTime, speedAtTime, timeAtDistance,
 } from '../../src/sim/constants';
-import { atan2, sin } from '../../src/sim/detmath';
-import { BASE_Y, createCourse, pistonHeight, type Course, type Hazard } from '../../src/sim/course';
-import { Simulation } from '../../src/sim/simulation';
+import { atan2, cos, normalizeAngle, sin } from '../../src/sim/detmath';
+import { BASE_Y, createCourse, pistonHeight, type Course, type Hazard, type RailZone, type Surface } from '../../src/sim/course';
+import { SeededRng } from '../../src/sim/rng';
+import { Simulation, WHEEL_VERTICAL_OFFSET } from '../../src/sim/simulation';
 
 const DISTANCE_150_SECONDS = distanceAtTime(150);
 const FAIRNESS_DISTANCE = DISTANCE_150_SECONDS + 10_000;
@@ -228,6 +230,72 @@ function runSuctionTrial(
     flips: simulation.state.stats.totalFlips,
     fanMinimum,
   };
+}
+
+function prepareRailLanding(
+  seed: number,
+  options: { xBeforeZoneEnd?: number; angle?: number; vy?: number } = {},
+): { simulation: Simulation; zone: RailZone } {
+  const simulation = new Simulation(seed);
+  const ceiling = simulation.course.ceilingsInRange(0, distanceAtTime(90))[0];
+  if (!ceiling) throw new Error(`seed ${seed} has no suction section`);
+  const zone = simulation.course.railZoneAt(ceiling.x0);
+  if (!zone) throw new Error(`seed ${seed} has no rail zone`);
+  const x = zone.x1 - (options.xBeforeZoneEnd ?? 350);
+  const surface = simulation.course.surfaceAt(x);
+  if (!surface) throw new Error(`seed ${seed} rail landing point has no surface`);
+  const state = simulation.state;
+  const elapsed = timeAtDistance(x);
+  const speed = speedAtTime(elapsed);
+  state.x = x;
+  state.y = surface.y - 100;
+  state.speed = speed;
+  state.vx = speed;
+  state.elapsed = elapsed;
+  state.airtime = 0.5;
+  state.vy = options.vy ?? 400;
+  state.angle = options.angle ?? Math.PI;
+  state.angularVelocity = 0;
+  state.grounded = false;
+  state.inverted = false;
+  state.stats.distance = Math.floor(x / 10);
+  state.stats.score = state.stats.distance;
+  (simulation as unknown as { previousX: number }).previousX = x;
+  return { simulation, zone };
+}
+
+function captureLandingContacts(simulation: Simulation): Array<{ angle: number; slope: number }> {
+  const internals = simulation as unknown as {
+    checkLanding: () => void;
+    wheelPoint: (offset: number) => { bottom: number; surface: Surface | null };
+    previousWheelBottoms: [number, number];
+    recovering: boolean;
+  };
+  const captured: Array<{ angle: number; slope: number }> = [];
+  const checkLanding = internals.checkLanding.bind(simulation);
+  internals.checkLanding = () => {
+    const { state } = simulation;
+    let slope: number | null = null;
+    if (state.vy >= 0) {
+      const wheels = [internals.wheelPoint(WHEELBASE / 2), internals.wheelPoint(-WHEELBASE / 2)];
+      const snapLimit = SNAP_TOLERANCE + Math.abs(state.vy) * FIXED_DT;
+      const contacts = wheels.filter((wheel, index) => (
+        wheel.surface
+        && wheel.bottom >= wheel.surface.y
+        && (internals.recovering || internals.previousWheelBottoms[index]! <= wheel.surface.y + snapLimit)
+      ));
+      if (contacts.length > 0) {
+        slope = contacts.reduce((highest, wheel) => (
+          (wheel.surface?.y ?? Infinity) < (highest.surface?.y ?? Infinity) ? wheel : highest
+        )).surface!.slope;
+      }
+    }
+    checkLanding();
+    if (slope !== null && simulation.events.some((event) => event.type === 'land' || event.type === 'touchdown')) {
+      captured.push({ angle: state.angle, slope });
+    }
+  };
+  return captured;
 }
 
 function runAcrossFirstPlainGap(seed: number, jumpGap: boolean): { simulation: Simulation; gap: Hazard } {
@@ -516,15 +584,229 @@ describe('procedural gameplay fairness', () => {
       const course = createCourse(seed);
       const ceiling = course.ceilingsInRange(0, distanceAtTime(90))[0];
       expect(ceiling).toBeDefined();
+      const zone = course.railZoneAt(ceiling!.x0);
+      expect(zone).toBeDefined();
+      expect(zone?.ceiling).toEqual(ceiling);
       const speed = speedAtTime(timeAtDistance(ceiling!.x0));
       expect((ceiling!.x1 - ceiling!.x0) / speed).toBeLessThanOrEqual(1.5);
       const floor = course.segmentsInRange(ceiling!.x0, ceiling!.x1)
         .find((segment) => segment.x0 <= ceiling!.x0 && segment.x1 >= ceiling!.x1);
       expect(floor?.kind).toBe('flat');
       const quarter = course.segmentsInRange(0, ceiling!.x0)
-        .filter((segment) => segment.kind === 'quarter').at(-1);
+        .find((segment) => segment.kind === 'quarter' && segment.x0 >= zone!.x0);
       expect(quarter).toBeDefined();
+      expect(zone?.x0).toBe(quarter?.x0);
+      const zoneSegments = course.segmentsInRange(zone!.x0, zone!.x1);
+      const exitSlope = zoneSegments.find((segment) => segment.x1 === zone!.x1);
+      expect(exitSlope?.kind).toBe('slope');
+      expect(exitSlope?.x1).toBe(zone?.x1);
+      expect(zoneSegments.some((segment) => segment.kind === 'gap')).toBe(false);
+      expect(course.hazardsAhead(zone!.x0, zone!.x1 - zone!.x0)
+        .filter((hazard) => hazard.x < zone!.x1 && hazard.x + hazard.width > zone!.x0)).toEqual([]);
+      expect(course.railZoneAt(zone!.x1 + 1)).toBeNull();
     }
+  });
+
+  it('keeps 2,000 deterministic input policies alive and aligned through rail zones', () => {
+    let runs = 0;
+    let recoveryTriggers = 0;
+    let landingContacts = 0;
+    let minimumMargin = Infinity;
+
+    for (let seed = 0; seed < 100; seed += 1) {
+      const template = new Simulation(seed);
+      const ceiling = template.course.ceilingsInRange(0, distanceAtTime(90))[0];
+      expect(ceiling, `seed ${seed} has a suction section`).toBeDefined();
+      const zone = template.course.railZoneAt(ceiling!.x0);
+      expect(zone, `seed ${seed} has a rail zone`).toBeDefined();
+      const startSpeed = speedAtTime(timeAtDistance(zone!.x0));
+      const estimatedStartX = zone!.x0 - startSpeed * 2;
+      const approachHazards = template.course.hazardsAhead(estimatedStartX, zone!.x0 - estimatedStartX);
+      const candidateStartX = approachHazards.reduce((start, hazard) => {
+        if (hazard.kind === 'beam') return start;
+        const lead = hazard.kind === 'gap' ? hazard.safeJumpReach * 0.08 : hazard.safeJumpReach * 0.35;
+        return Math.min(start, hazard.x - lead - startSpeed * 0.12);
+      }, estimatedStartX);
+      const approachSegments = template.course.segmentsInRange(0, zone!.x0);
+      const safeStartSegment = approachSegments.find((segment) => (
+        segment.kind !== 'gap' && candidateStartX >= segment.x0 && candidateStartX < segment.x1
+      ));
+      const previousGroundSegment = approachSegments
+        .filter((segment) => segment.kind !== 'gap' && segment.x1 <= candidateStartX)
+        .at(-1);
+      const startX = safeStartSegment
+        ? candidateStartX
+        : previousGroundSegment
+          ? Math.max(previousGroundSegment.x0, previousGroundSegment.x1 - startSpeed * 0.12)
+          : approachSegments.find((segment) => segment.kind !== 'gap')?.x0 ?? candidateStartX;
+      const startSurface = template.course.surfaceAt(startX);
+      expect(startSurface, `seed ${seed} has a safe rail approach`).not.toBeNull();
+
+      for (let policy = 0; policy < 20; policy += 1) {
+        const simulation = template.clone();
+        runs += 1;
+        const state = simulation.state;
+        const startTime = timeAtDistance(startX);
+        const speed = speedAtTime(startTime);
+        state.x = startX;
+        state.y = startSurface!.y - 20;
+        state.speed = speed;
+        state.vx = speed;
+        state.elapsed = startTime;
+        state.grounded = true;
+        state.inverted = false;
+        state.recovering = false;
+        state.vy = 0;
+        state.angle = 0;
+        state.stats.distance = Math.floor(startX / 10);
+        state.stats.score = state.stats.distance;
+        (simulation as unknown as { previousX: number }).previousX = startX;
+        const contactSnapshots = captureLandingContacts(simulation);
+
+        const rng = new SeededRng(0x5eed + seed * 101 + policy * 7919);
+        let held = false;
+        let policyStarted = false;
+        let ticksUntilToggle = Number.POSITIVE_INFINITY;
+        const maxTicks = Math.ceil(8 / FIXED_DT);
+        for (let tick = 0; tick < maxTicks && state.x <= zone!.x1 && !state.crashed; tick += 1) {
+          const inZone = state.x >= zone!.x0;
+          if (inZone && policy === 0) {
+            held = true;
+          } else if (inZone && policy >= 2) {
+            if (!policyStarted) {
+              policyStarted = true;
+              held = rng.next() >= 0.5;
+              ticksUntilToggle = rng.int(3, 24);
+            } else if (ticksUntilToggle === 0) {
+              held = !held;
+              ticksUntilToggle = rng.int(3, 24);
+            }
+          }
+          const xBeforeStep = state.x;
+          simulation.step(inZone ? held : lookaheadJump(simulation));
+          if (inZone && policy >= 2 && policyStarted) ticksUntilToggle -= 1;
+          if (simulation.events.some((event) => event.type === 'railRecovery')) recoveryTriggers += 1;
+          expect(
+            state.crashed && state.x >= zone!.x0 && state.x <= zone!.x1,
+            `seed ${seed}, policy ${policy} crashes inside rail zone at ${state.x.toFixed(1)}`,
+          ).toBe(false);
+          if (simulation.events.some((event) => event.type === 'land' || event.type === 'touchdown')) {
+            const contactX = state.x;
+            if (contactX >= zone!.x0 && contactX <= zone!.x1) {
+              const contact = contactSnapshots.at(-1);
+              expect(contact, `landing at ${contactX.toFixed(1)} has a contact snapshot`).toBeDefined();
+              const angleOff = Math.abs(normalizeAngle(contact!.angle - contact!.slope));
+              const margin = LANDING_LIMIT - angleOff;
+              landingContacts += 1;
+              minimumMargin = Math.min(minimumMargin, margin);
+              expect(
+                angleOff,
+                `seed ${seed}, policy ${policy} contact at ${xBeforeStep.toFixed(1)}→${contactX.toFixed(1)}: `
+                + `angle=${contact!.angle}, slope=${contact!.slope}`,
+              ).toBeLessThanOrEqual(LANDING_LIMIT + 1e-9);
+            }
+          }
+        }
+        expect(state.x, `seed ${seed}, policy ${policy} passes rail-zone end`).toBeGreaterThanOrEqual(zone!.x1);
+      }
+    }
+
+    console.info(
+      `rail-recovery fuzz: ${runs} runs, ${recoveryTriggers} triggers, `
+      + `${landingContacts} rail contacts, minimum angle margin ${(minimumMargin * 180 / Math.PI).toFixed(3)}°`,
+    );
+    expect(runs).toBe(2_000);
+    expect(landingContacts).toBeGreaterThan(0);
+  }, 120_000);
+
+  it('auto-recovers a held, misaligned rail miss with an unrewarded touchdown and cloned state', () => {
+    const { simulation, zone } = prepareRailLanding(5, { angle: Math.PI });
+    simulation.step(true);
+    expect(simulation.events.some((event) => event.type === 'railRecovery')).toBe(true);
+    expect(simulation.events.some((event) => event.type === 'thrusterBurst')).toBe(false);
+    expect(simulation.state.recovering).toBe(true);
+
+    const clone = simulation.clone();
+    expect(clone.state.recovering).toBe(true);
+    const initialScore = simulation.state.stats.score;
+    const initialDistance = simulation.state.stats.distance;
+    const initialCombo = simulation.state.combo;
+    let touchdown = false;
+    for (let tick = 0; tick < 240 && !simulation.state.grounded && !simulation.state.crashed; tick += 1) {
+      simulation.step(true);
+      clone.step(true);
+      expect(clone.state).toEqual(simulation.state);
+      expect(clone.events).toEqual(simulation.events);
+      if (simulation.events.some((event) => event.type === 'touchdown')) touchdown = true;
+      expect(simulation.events.some((event) => event.type === 'land')).toBe(false);
+      expect(
+        !simulation.state.crashed
+        || simulation.state.x < zone.x0
+        || simulation.state.x > zone.x1,
+      ).toBe(true);
+    }
+    expect(touchdown).toBe(true);
+    expect(simulation.state.grounded).toBe(true);
+    expect(simulation.state.crashed).toBe(false);
+    expect(simulation.state.recovering).toBe(false);
+    expect(simulation.state.combo).toBe(initialCombo);
+    expect(simulation.state.stats.score - initialScore)
+      .toBe(simulation.state.stats.distance - initialDistance);
+  });
+
+  it('recovers after a misaligned bounce from the rail ceiling', () => {
+    const simulation = new Simulation(5);
+    const ceiling = simulation.course.ceilingsInRange(0, distanceAtTime(90))[0]!;
+    const zone = simulation.course.railZoneAt(ceiling.x0)!;
+    const x = (ceiling.x0 + ceiling.x1) / 2;
+    const speed = speedAtTime(timeAtDistance(x));
+    const angle = 0.8;
+    const state = simulation.state;
+    state.x = x;
+    state.y = ceiling.y + CAR_LENGTH * 0.32 * Math.sin(angle) + CAR_HEIGHT * 0.3 + 1;
+    state.speed = speed;
+    state.vx = speed;
+    state.elapsed = timeAtDistance(x);
+    state.grounded = false;
+    state.inverted = false;
+    state.airtime = 0.5;
+    state.vy = -240;
+    state.angle = angle;
+    state.stats.distance = Math.floor(x / 10);
+    state.stats.score = state.stats.distance;
+    (simulation as unknown as { previousX: number }).previousX = x;
+
+    simulation.step(false);
+    expect(simulation.state.vy).toBeGreaterThan(0);
+    let recovered = simulation.events.some((event) => event.type === 'railRecovery');
+    let touchdown = simulation.events.some((event) => event.type === 'touchdown');
+    for (let tick = 0; tick < 240 && !touchdown && !simulation.state.crashed; tick += 1) {
+      simulation.step(false);
+      recovered ||= simulation.events.some((event) => event.type === 'railRecovery');
+      touchdown ||= simulation.events.some((event) => event.type === 'touchdown');
+      expect(
+        !simulation.state.crashed || simulation.state.x < zone.x0 || simulation.state.x > zone.x1,
+      ).toBe(true);
+    }
+    expect(recovered).toBe(true);
+    expect(touchdown).toBe(true);
+    expect(simulation.state.crashed).toBe(false);
+  });
+
+  it('preserves a self-righted rail landing and its normal reward', () => {
+    const { simulation } = prepareRailLanding(5, { angle: 0, xBeforeZoneEnd: 350 });
+    const initialScore = simulation.state.stats.score;
+    let landing: Extract<Simulation['events'][number], { type: 'land' }> | undefined;
+    let recovered = false;
+    for (let tick = 0; tick < 120 && !simulation.state.grounded && !simulation.state.crashed; tick += 1) {
+      simulation.step(false);
+      recovered ||= simulation.events.some((event) => event.type === 'railRecovery');
+      landing = simulation.events.find((event): event is Extract<Simulation['events'][number], { type: 'land' }> => event.type === 'land') ?? landing;
+    }
+    expect(recovered).toBe(false);
+    expect(landing).toBeDefined();
+    expect(simulation.state.crashed).toBe(false);
+    expect(simulation.state.stats.score).toBeGreaterThan(initialScore);
   });
 
   it('lets a scripted half-flip bot clear at least 85 of 100 suction sections', () => {
