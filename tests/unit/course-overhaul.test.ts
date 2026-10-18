@@ -131,16 +131,18 @@ function checkFairness(seed: number): void {
     if (approach?.kind === 'vramp') {
       // A vertical-run pit is crossed by the launched arc, not a jump: an
       // elevated landing deck must follow and stay hazard-free through the
-      // descent back to grade.
+      // descent back to grade. A pit on the range boundary has its deck just
+      // outside the queried window — nothing to check here.
       const deck = segments[index + 1];
-      expect(deck, `${gap.id} vertical-run landing deck`).toBeDefined();
-      expect(deck!.kind).toBe('platform');
-      const deckLength = deck!.x1 - deck!.x0;
-      const speedAtLanding = speedAtTime(timeAtDistance(deck!.x0));
+      if (!deck) continue;
+      expect(deck.kind, `${gap.id} vertical-run landing deck`).toBe('platform');
+      const deckLength = deck.x1 - deck.x0;
+      const speedAtLanding = speedAtTime(timeAtDistance(deck.x0));
       expect(deckLength, `${gap.id} landing deck length`).toBeGreaterThanOrEqual(speedAtLanding * 0.5);
       const runout = segments[index + 2];
-      expect(runout?.kind).toBe('slope');
-      const blockers = hazards.filter((hazard) => hazard.x >= gap.x1 && hazard.x < runout!.x1);
+      if (!runout) continue;
+      expect(runout.kind).toBe('slope');
+      const blockers = hazards.filter((hazard) => hazard.x >= gap.x1 && hazard.x < runout.x1);
       expect(blockers, `${gap.id} landing zone`).toEqual([]);
       continue;
     }
@@ -155,7 +157,10 @@ function checkFairness(seed: number): void {
     const slope = Math.abs(atan2(ramp.y1 - ramp.y0, ramp.x1 - ramp.x0));
     expect(slope, `${ramp.id} lip steepness`).toBeGreaterThan(1.0);
     const speed = speedAtTime(timeAtDistance(ramp.x1));
-    const launchVy = speed * Math.sin(slope) + 500;
+    // The lip is vertical by construction, so the launch carries the full
+    // surface speed upward plus the thruster boost — not the chord slope.
+    const lipSurfaceSlope = Math.abs(course.surfaceAt(ramp.x1 - 0.5)!.slope);
+    const launchVy = speed * Math.sin(lipSurfaceSlope) + 500;
     const pit = segments[segments.indexOf(ramp) + 1];
     expect(pit?.kind, `${ramp.id} pit follows the ramp`).toBe('gap');
     const deck = segments[segments.indexOf(ramp) + 2];
@@ -1428,6 +1433,87 @@ describe('vertical run and vehicle stunt obstacles', () => {
     console.info(`vertical-run clean traversals: ${bonusRuns}/${attempts}`);
     expect(attempts).toBeGreaterThanOrEqual(12);
     expect(bonusRuns).toBe(attempts);
+  }, 120_000);
+
+  it('carries a hands-off car up the ramp, through the air-burst flip, and onto the deck', () => {
+    // The ramp is a design element, not a skill check: a car that never
+    // touches the thruster or the jump button must ride, launch, flip, and
+    // land every time — regardless of how much fan energy it has left.
+    let traversed = 0;
+    let tried = 0;
+    for (let seed = 0; seed < 30 && tried < 12; seed += 1) {
+      const course = createCourse(seed);
+      const run = course.verticalRunsInRange(0, DISTANCE_150_SECONDS)[0];
+      if (!run) continue;
+      const surface = course.surfaceAt(run.rampX0 - 400);
+      if (!surface) continue;
+      tried += 1;
+      const simulation = new Simulation(seed);
+      const elapsed = timeAtDistance(run.rampX0 - 400);
+      const speed = speedAtTime(elapsed);
+      Object.assign(simulation.state, {
+        x: run.rampX0 - 400, y: surface.y - 30, elapsed, speed, vx: speed, vy: 0,
+        grounded: true, fan: 0,
+      });
+      let launched = 0;
+      let landed = 0;
+      let airBursts = 0;
+      const maxTicks = Math.ceil(30 / FIXED_DT);
+      for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+        simulation.step(false);
+        for (const event of simulation.events) {
+          if (event.type === 'verticalLaunch') launched += 1;
+          if (event.type === 'verticalRunLanded') landed += 1;
+          if (event.type === 'airBurst') airBursts += 1;
+        }
+        if (landed > 0 && simulation.state.x > run.landingX0 + 600) break;
+      }
+      if (!simulation.state.crashed && launched === 1 && landed === 1 && airBursts > 0) traversed += 1;
+    }
+    console.info(`vertical-run hands-off traversals: ${traversed}/${tried}`);
+    expect(tried).toBeGreaterThanOrEqual(6);
+    expect(traversed).toBe(tried);
+  }, 120_000);
+
+  it('fires the air-burst 360 when a launched arc clears a vehicle lineup', () => {
+    let flipped = 0;
+    let tried = 0;
+    for (let seed = 0; seed < 40 && tried < 12; seed += 1) {
+      const course = createCourse(seed);
+      const lineup = course.hazardsAhead(0, DISTANCE_150_SECONDS)
+        .find((hazard) => hazard.kind === 'vehicles' && hazard.requiresRamp);
+      if (!lineup) continue;
+      // Find the assist ramp feeding the lineup and start on its run-up.
+      const rampSeg = course.segmentsInRange(lineup.x - 3000, lineup.x)
+        .reverse()
+        .find((segment) => segment.kind === 'launch');
+      if (!rampSeg) continue;
+      const surface = course.surfaceAt(rampSeg.x0 - 300);
+      if (!surface) continue;
+      tried += 1;
+      const simulation = new Simulation(seed);
+      const elapsed = timeAtDistance(rampSeg.x0 - 300);
+      const speed = speedAtTime(elapsed);
+      Object.assign(simulation.state, {
+        x: rampSeg.x0 - 300, y: surface.y - 30, elapsed, speed, vx: speed, vy: 0,
+        grounded: true,
+      });
+      let flips = 0;
+      let airBursts = 0;
+      const maxTicks = Math.ceil(20 / FIXED_DT);
+      for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+        simulation.step(false);
+        for (const event of simulation.events) {
+          if (event.type === 'vehicleFlip') flips += 1;
+          if (event.type === 'airBurst') airBursts += 1;
+        }
+        if (flips > 0 && simulation.state.grounded && simulation.state.x > lineup.x + lineup.width + 200) break;
+      }
+      if (!simulation.state.crashed && flips === 1 && airBursts > 0) flipped += 1;
+    }
+    console.info(`launch-assisted vehicle flips: ${flipped}/${tried}`);
+    expect(tried).toBeGreaterThanOrEqual(4);
+    expect(flipped).toBe(tried);
   }, 120_000);
 
   it('awards the vertical-run bonus exactly once per traversal', () => {

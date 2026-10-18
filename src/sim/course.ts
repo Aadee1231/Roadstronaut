@@ -60,6 +60,8 @@ export interface VerticalRunInfo {
   landingX0: number;
   /** x where the protected landing flat ends. */
   landingX1: number;
+  /** Surface height of the elevated landing deck below the lip. */
+  deckY: number;
 }
 
 export interface ObstacleBox {
@@ -122,8 +124,6 @@ const FIRST_SUCTION_AT = 62;
 const SUCTION_INTERVAL = 30;
 const VRAMP_INTERVAL_MIN = 45;
 const VRAMP_INTERVAL_MAX = 70;
-/** Quartic exponent shaping the vertical-run wall: horizontal entry easing into a near-vertical face. */
-const VRAMP_CURVE_EXPONENT = 4;
 
 function difficultyBand(time: number): 0 | 1 | 2 | 3 {
   if (time < 12) return 0;
@@ -201,7 +201,7 @@ export class Course {
 
   private appendBreather(): void {
     const time = timeAtDistance(this.x);
-    const breathSeconds = 1.6 - 0.9 * clamp(time / 90, 0, 1);
+    const breathSeconds = 1.45 - 0.85 * clamp(time / 80, 0, 1);
     const speed = this.speedAtX(this.x);
     const length = speed * breathSeconds;
     if (this.rng.next() < 0.42 && length >= speed * 0.7) {
@@ -227,14 +227,14 @@ export class Course {
 
   private choosePattern(band: 0 | 1 | 2 | 3, time: number): Pattern {
     if (band === 0) {
-      return this.weightedPattern([['hill', 28], ['kicker', 32], ['obstacle', 34], ['vehicles', 6]]);
+      return this.weightedPattern([['hill', 28], ['kicker', 32], ['obstacle', 32], ['vehicles', 9]]);
     }
     if (band === 1) {
-      return this.weightedPattern([['hill', 14], ['kicker', 12], ['obstacle', 33], ['gap', 35], ['vehicles', 6]]);
+      return this.weightedPattern([['hill', 14], ['kicker', 12], ['obstacle', 30], ['gap', 32], ['vehicles', 14]]);
     }
     if (band === 2) {
       const patterns: WeightedPattern[] = [
-        ['hill', 10], ['obstacle', 23], ['gap', 20], ['platform', 25], ['kicker', 8], ['vehicles', 10],
+        ['hill', 10], ['obstacle', 21], ['gap', 18], ['platform', 22], ['kicker', 8], ['vehicles', 18],
       ];
       if (time >= 45) patterns.push(['obstacle-gap', 10]);
       if (time >= 30) {
@@ -243,8 +243,8 @@ export class Course {
       return this.weightedPattern(patterns);
     }
     return this.weightedPattern([
-      ['hill', 8], ['obstacle', 15], ['gap', 13], ['platform', 16],
-      ['double', 16], ['obstacle-gap', 15], ['narrow', 12], ['vehicles', 13],
+      ['hill', 8], ['obstacle', 14], ['gap', 12], ['platform', 15],
+      ['double', 16], ['obstacle-gap', 15], ['narrow', 12], ['vehicles', 22],
     ]);
   }
 
@@ -591,7 +591,7 @@ export class Course {
     this.appendFlat(speed * 1.15);
 
     const height = clamp(speed * 0.85, 470, 830);
-    const width = height * 0.42;
+    const width = height * 0.5;
     const rampX0 = this.x;
     this.appendSegment('vramp', width, this.y - height);
     const lipX = this.x;
@@ -604,9 +604,10 @@ export class Course {
     const deckDrop = clamp(speed * 0.35, 260, 480);
     const deckY = lipY + deckDrop;
     const flightSeconds = (launchVy + Math.sqrt(launchVy * launchVy + 2 * GRAVITY * deckDrop)) / GRAVITY;
-    // The deck begins a beat before the arc crosses deck height so the car
-    // always arrives above its top edge.
-    const deckX0 = lipX + speed * (flightSeconds - 0.12);
+    // The deck begins a beat before the arc crosses deck height so the car —
+    // rotating mid-somersault, wheels sweeping low — always arrives above its
+    // top edge instead of clipping the rim.
+    const deckX0 = lipX + speed * (flightSeconds - 0.22);
     this.appendSegment('gap', deckX0 - this.x, deckY);
     this.addGapAt(lipX, deckX0 - lipX, BASE_Y);
 
@@ -625,6 +626,7 @@ export class Course {
       lipY,
       landingX0,
       landingX1: this.x,
+      deckY,
     });
   }
 
@@ -680,14 +682,14 @@ export class Course {
     // at the tallest unit is lost, with margin for early presses.
     const jumpableSpan = (h: number): number => (clearanceTime(h) - 0.31) * speed - 90;
 
-    const wantsSemi = band >= 2 && this.rng.next() < 0.3;
-    const wantsShowcase = band === 3 && this.rng.next() < 0.22;
-    const wantsTrio = band >= 1 && this.rng.next() < 0.4;
+    const wantsSemi = band >= 1 && this.rng.next() < (band >= 2 ? 0.38 : 0.15);
+    const wantsShowcase = band >= 2 && this.rng.next() < (band === 3 ? 0.32 : 0.16);
+    const wantsTrio = band >= 1 && this.rng.next() < 0.5;
 
     const rampAssisted = wantsSemi || wantsShowcase || wantsTrio;
 
     if (!rampAssisted) {
-      const count = band === 0 ? 1 : this.rng.int(2, 3);
+      const count = band === 0 ? 1 : this.rng.int(2, band >= 3 ? 5 : band >= 2 ? 4 : 3);
       const units: VehicleUnit[] = [];
       for (let index = 0; index < count; index += 1) {
         // Multi-car rows favor low sports cars so the tail stays clearable.
@@ -829,10 +831,12 @@ export class Course {
     const width = segment.x1 - segment.x0;
     const t = clamp((x - segment.x0) / width, 0, 1);
     if (segment.kind === 'vramp') {
-      // Quartic ease: flat entry curling to a near-vertical face at the lip.
-      const eased = Math.pow(t, VRAMP_CURVE_EXPONENT);
+      // Quarter-circle hook: dead-flat entry curling to a fully vertical lip,
+      // like a stunt ramp that sweeps the car up a wall.
       const rise = segment.y1 - segment.y0;
-      const dyDt = rise * VRAMP_CURVE_EXPONENT * Math.pow(t, VRAMP_CURVE_EXPONENT - 1);
+      const tc = min(t, 0.9995);
+      const eased = 1 - Math.sqrt(1 - tc * tc);
+      const dyDt = rise * tc / Math.sqrt(1 - tc * tc);
       return {
         y: segment.y0 + rise * eased,
         slope: atan2(dyDt, width),

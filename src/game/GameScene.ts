@@ -393,6 +393,21 @@ export class GameScene extends Phaser.Scene {
           cam.shake(180, 0.006);
           cam.flash(120, 255, 210, 120, true);
           break;
+        case 'vehicleFlip':
+          this.flameTimer = Math.max(this.flameTimer, 0.45);
+          this.exhaust.explode(16, state.x, state.y);
+          this.dust.explode(10, state.x, state.y);
+          cam.shake(90, 0.003);
+          break;
+        case 'airBurst': {
+          // Compressed-air puffs shoving the car around the somersault.
+          const side = Math.floor(state.elapsed * 11) % 2 ? 1 : -1;
+          const c = Math.cos(state.angle);
+          const s = Math.sin(state.angle);
+          this.exhaust.explode(5, state.x - c * side * 40, state.y - s * side * 40 - CAR_HEIGHT / 2);
+          this.dust.explode(4, state.x + s * 20, state.y + c * 20);
+          break;
+        }
         case 'hardLanding':
           cam.shake(220, 0.008);
           this.dust.explode(14, (rear.x + front.x) / 2, (rear.y + front.y) / 2);
@@ -612,6 +627,13 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i <= steps; i += 1) {
       const x = seg.x0 + (seg.x1 - seg.x0) * (i / steps);
       pts.push({ x, y: course.surfaceAt(x)?.y ?? seg.y0 });
+    }
+    // Decorative overhang: the drawn structure curls past vertical like a
+    // stunt-ramp hook. Visual only — the rideable curve ends at the lip.
+    const curlR = (seg.y0 - seg.y1) * 0.55;
+    for (let k = 1; k <= 8; k += 1) {
+      const phi = (k / 8) * 0.55;
+      pts.push({ x: seg.x1 - curlR * (1 - Math.cos(phi)), y: seg.y1 - curlR * Math.sin(phi) });
     }
     return pts;
   }

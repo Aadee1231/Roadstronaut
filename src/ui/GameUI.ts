@@ -392,6 +392,7 @@ export class GameUI {
             : event.type === 'suctionEngage' ? 'SUCTION ENGAGED'
               : event.type === 'railRecovery' ? 'AUTO-RECOVER'
               : event.type === 'thrusterBurst' ? 'THRUSTER BURST'
+              : event.type === 'vehicleFlip' ? '360 STUNT'
               : event.type === 'verticalRunApproach' ? 'VERTICAL RUN'
               : event.type === 'verticalSuction' ? 'SUCTION ENGAGED'
               : event.type === 'thrustersArmed' ? 'THRUSTERS ARMED'
