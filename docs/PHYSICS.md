@@ -53,7 +53,11 @@ frame-time-dependent updates.
 
 The ground press starts a jump and never rotates or bursts. A new press during
 airtime may burst if its count, cooldown, and energy allow it; holding then
-continues the normal rotation control.
+continues the normal rotation control. A flip that was started always finishes:
+when the tank empties mid-flip the car keeps rotating on momentum to the next
+flip boundary, coasting the last ~1.15 rad like a released press, so an empty
+tank can never freeze the car mid-flip. A momentum-finished flip pays no
+flip-completion energy refund, and starting a new flip still requires energy.
 
 ## Contacts, landings, and hazards
 

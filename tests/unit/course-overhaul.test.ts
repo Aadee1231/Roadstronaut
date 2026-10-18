@@ -388,7 +388,7 @@ interface LaunchAttemptResult {
   crashReason: Simulation['state']['crashReason'];
 }
 
-function runLaunchFlip(seed: number, targetFlips: 1 | 2, seconds = 45): LaunchAttemptResult {
+function runLaunchFlip(seed: number, targetFlips: 1 | 2, seconds = 45, energyOverride?: number): LaunchAttemptResult {
   const simulation = new Simulation(seed);
   let mode: 'idle' | 'release' | 'rotate' = 'idle';
   let rotationStart = 0;
@@ -414,10 +414,12 @@ function runLaunchFlip(seed: number, targetFlips: 1 | 2, seconds = 45): LaunchAt
     if (mode === 'idle' && events.some((event) => event.type === 'superLaunch')) {
       attempts += 1;
       rotationStart = simulation.state.angle;
+      if (energyOverride !== undefined) simulation.state.energy = energyOverride;
       mode = 'release';
     } else if (mode === 'idle' && surface?.segment.kind === 'launch' && events.some((event) => event.type === 'takeoff')) {
       attempts += 1;
       rotationStart = simulation.state.angle;
+      if (energyOverride !== undefined) simulation.state.energy = energyOverride;
       mode = 'rotate';
     } else if (mode === 'release') {
       mode = 'rotate';
@@ -1274,6 +1276,17 @@ describe('procedural gameplay fairness', () => {
     expect(singleSuccesses).toBeGreaterThanOrEqual(singleAttempts * 0.9);
     expect(doubleAttempts).toBeGreaterThanOrEqual(36);
     expect(doubleSuccesses).toBeGreaterThanOrEqual(doubleAttempts * 0.6);
+  }, 120_000);
+
+  it('lets a super-launch double flip finish on momentum from a low thruster tank', () => {
+    // 55 energy powers into the second flip but cannot carry it through; the
+    // started flip must finish on momentum instead of freezing mid-air.
+    const results = Array.from({ length: 40 }, (_, seed) => runLaunchFlip(seed, 2, 45, 55));
+    const attempts = results.filter((result) => result.attempted).length;
+    const successes = results.filter((result) => result.successful).length;
+    console.info(`low-tank double-flip bots: ${successes}/${attempts}`);
+    expect(attempts).toBeGreaterThanOrEqual(36);
+    expect(successes).toBeGreaterThanOrEqual(attempts * 0.8);
   }, 120_000);
 
   it('makes a late plain-jump flip fail at least 80 percent of the time', () => {
