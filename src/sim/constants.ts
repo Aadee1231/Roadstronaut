@@ -1,4 +1,4 @@
-import { max, min } from './detmath';
+import { max, min } from './detmath.js';
 
 export const FIXED_DT = 1 / 120;
 export const MAX_RUN_SECONDS = 20 * 60;

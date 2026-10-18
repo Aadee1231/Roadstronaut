@@ -1,4 +1,4 @@
-import { max, min } from './detmath';
+import { max, min } from './detmath.js';
 
 export type LandingQuality = 'clean' | 'great' | 'perfect';
 

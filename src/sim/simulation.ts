@@ -9,12 +9,12 @@ import {
   RECOVERY_ANGULAR_SPEED, RECOVERY_MARGIN, RECOVERY_TRIGGER_OFF, SUCTION_ALIGN, SUCTION_POINTS_PER_SECOND,
   SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
-} from './constants';
+} from './constants.js';
 import {
   BASE_Y, createCourse, pistonHeight, type CeilingSegment, type Course, type Surface,
-} from './course';
-import { atan2, clamp, cos, max, min, normalizeAngle, sin } from './detmath';
-import { awardLanding, awardNearMiss, createRunStats, type LandingQuality, type RunStats } from './scoring';
+} from './course.js';
+import { atan2, clamp, cos, max, min, normalizeAngle, sin } from './detmath.js';
+import { awardLanding, awardNearMiss, createRunStats, type LandingQuality, type RunStats } from './scoring.js';
 
 export type SimEvent =
   | { type: 'jump' | 'superLaunch' | 'takeoff' | 'energyEmpty' | 'milestone' }

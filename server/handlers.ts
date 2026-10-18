@@ -1,9 +1,9 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { decodeInputLog, replayRun } from '../src/sim/replay';
-import { FIXED_DT, MAX_RUN_SECONDS } from '../src/sim/constants';
-import type { BackendMode, HandlerRequest, HandlerResponse } from './types';
-import type { LeaderboardStore } from './store';
-import { firstHeader, hashIp, isRecord, mondayStartUtc, normalizeNickname, readJsonBody, UUID_PATTERN } from './validation';
+import { decodeInputLog, replayRun } from '../src/sim/replay.js';
+import { FIXED_DT, MAX_RUN_SECONDS } from '../src/sim/constants.js';
+import type { BackendMode, HandlerRequest, HandlerResponse } from './types.js';
+import type { LeaderboardStore } from './store.js';
+import { firstHeader, hashIp, isRecord, mondayStartUtc, normalizeNickname, readJsonBody, UUID_PATTERN } from './validation.js';
 
 export interface HandlerContext {
   store: LeaderboardStore | null;

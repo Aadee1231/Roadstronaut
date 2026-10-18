@@ -1,5 +1,5 @@
-import { MemoryStore, SupabaseStore } from './store';
-import { createHandlers } from './handlers';
+import { MemoryStore, SupabaseStore } from './store.js';
+import { createHandlers } from './handlers.js';
 
 const devMemory = new MemoryStore();
 let supabaseHandlers: ReturnType<typeof createHandlers> | null = null;

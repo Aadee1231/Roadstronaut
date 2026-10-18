@@ -1,4 +1,4 @@
-import { Simulation } from './simulation';
+import { Simulation } from './simulation.js';
 
 export interface ReplayResult {
   stats: Simulation['state']['stats'];

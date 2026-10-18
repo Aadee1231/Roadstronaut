@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getRuntimeHandlers } from './runtime';
-import type { HandlerRequest } from './types';
+import { getRuntimeHandlers } from './runtime.js';
+import type { HandlerRequest } from './types.js';
 
 type HandlerName = 'runStart' | 'submitScore' | 'leaderboard' | 'player';
 

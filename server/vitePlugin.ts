@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
-import { createHandlers } from './handlers';
-import { MemoryStore } from './store';
-import type { HandlerRequest, HandlerResponse } from './types';
+import { createHandlers } from './handlers.js';
+import { MemoryStore } from './store.js';
+import type { HandlerRequest, HandlerResponse } from './types.js';
 
 function requestBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {

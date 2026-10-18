@@ -2,9 +2,9 @@ import {
   CAR_LENGTH, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY,
   LAUNCH_BOOST, START_SPEED,
   SUPER_JUMP_VELOCITY, distanceAtTime, speedAtTime, timeAtDistance,
-} from './constants';
-import { atan2, clamp, max, min, sin } from './detmath';
-import { SeededRng } from './rng';
+} from './constants.js';
+import { atan2, clamp, max, min, sin } from './detmath.js';
+import { SeededRng } from './rng.js';
 
 export const BASE_Y = 520;
 
