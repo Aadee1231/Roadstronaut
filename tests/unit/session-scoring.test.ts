@@ -59,7 +59,7 @@ describe('scoring rules', () => {
     landed.state.y = surface.y - CAR_HEIGHT / 2 + 1;
     landed.state.vy = 10;
     landed.state.angle = surface.slope;
-    (landed as unknown as { checkLanding: () => void }).checkLanding();
+    landed.step(false);
     expect(landed.state.grounded).toBe(true);
 
     const unsafe = new Simulation(6);
@@ -68,7 +68,7 @@ describe('scoring rules', () => {
     unsafe.state.y = unsafeSurface.y - CAR_HEIGHT * 0.3 + 1;
     unsafe.state.vy = 10;
     unsafe.state.angle = unsafeSurface.slope + Math.PI;
-    (unsafe as unknown as { checkLanding: () => void }).checkLanding();
+    unsafe.step(false);
     expect(unsafe.state.crashed).toBe(true);
     expect(unsafe.state.crashReason).toBe('bad-landing');
   });

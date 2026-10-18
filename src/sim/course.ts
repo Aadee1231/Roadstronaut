@@ -1,5 +1,5 @@
 import {
-  GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY,
+  CAR_LENGTH, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY,
   LAUNCH_BOOST, START_SPEED,
   SUPER_JUMP_VELOCITY, distanceAtTime, speedAtTime, timeAtDistance,
 } from './constants';
@@ -40,6 +40,7 @@ type Pattern = 'hill' | 'kicker' | 'obstacle' | 'gap' | 'platform' | 'double' | 
 type WeightedPattern = readonly [Pattern, number];
 
 const PLAIN_AIRTIME = -2 * JUMP_VELOCITY / GRAVITY;
+const PLAIN_GAP_APPROACH = 1.5 * CAR_LENGTH;
 const OPENING_RUNWAY_DISTANCE = 1_500;
 const ONBOARDING_END_SECONDS = 12;
 const ONBOARDING_HAZARD_SPACING_SECONDS = 1.8;
@@ -279,7 +280,7 @@ export class Course {
 
   private generateGap(widthScale?: number, endY = this.y): Hazard {
     const speed = this.speedAtX(this.x);
-    const hazardX = this.nextHazardX(this.x + speed * 0.3);
+    const hazardX = max(this.nextHazardX(this.x + speed * 0.3), this.x + PLAIN_GAP_APPROACH);
     this.appendFlat(hazardX - this.x);
     const reach = this.reachAtX(hazardX);
     const width = reach * (widthScale ?? this.rng.range(0.48, 0.68));
@@ -313,7 +314,10 @@ export class Course {
     const placed = this.addObstacleAt(obstacleX, this.y, obstacle);
     this.appendFlat(placed.width);
 
-    const gapX = this.nextHazardX(placed.x + placed.width + placed.minSpacing);
+    const gapX = max(
+      this.nextHazardX(placed.x + placed.width + placed.minSpacing),
+      this.x + PLAIN_GAP_APPROACH,
+    );
     this.appendFlat(gapX - this.x);
     const width = this.reachAtX(gapX) * this.rng.range(0.48, 0.66);
     const baseY = this.y;
@@ -324,7 +328,7 @@ export class Course {
 
   private generateNarrowLanding(): void {
     const speed = this.speedAtX(this.x);
-    const firstX = this.nextHazardX(this.x + speed * 0.25);
+    const firstX = max(this.nextHazardX(this.x + speed * 0.25), this.x + PLAIN_GAP_APPROACH);
     this.appendFlat(firstX - this.x);
     const firstWidth = this.reachAtX(firstX) * 0.54;
     const raisedY = BASE_Y - 30;

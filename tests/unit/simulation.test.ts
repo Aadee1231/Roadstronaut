@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { GRAVITY, JUMP_VELOCITY, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, distanceAtTime, speedAtTime, timeAtDistance } from '../../src/sim/constants';
+import { GRAVITY, JUMP_VELOCITY, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, WHEEL_RADIUS, distanceAtTime, speedAtTime, timeAtDistance } from '../../src/sim/constants';
 import { atan2, cos, normalizeAngle, sin } from '../../src/sim/detmath';
 import { decodeInputLog, encodeInputLog, replayRun } from '../../src/sim/replay';
-import { Simulation } from '../../src/sim/simulation';
+import { Simulation, WHEEL_VERTICAL_OFFSET } from '../../src/sim/simulation';
 import { airtimePoints, comboMultiplier, flipPoints, landingPoints } from '../../src/sim/scoring';
 import { SeededRng } from '../../src/sim/rng';
 
@@ -91,6 +91,21 @@ describe('simulation input and replay', () => {
     expect(apex).toBeGreaterThanOrEqual(startingY - 140);
     expect(landedAirtime).toBeGreaterThanOrEqual(0.8);
     expect(landedAirtime).toBeLessThanOrEqual(0.9);
+  });
+
+  it('emits a non-rewarding touchdown for a short contact', () => {
+    const simulation = new Simulation(5);
+    const surface = simulation.course.surfaceAt(0)!;
+    simulation.state.grounded = false;
+    simulation.state.airtime = 0.05;
+    simulation.state.vy = 100;
+    simulation.state.y = surface.y - WHEEL_VERTICAL_OFFSET - WHEEL_RADIUS + 2;
+    simulation.step(false);
+
+    expect(simulation.events.some((event) => event.type === 'touchdown')).toBe(true);
+    expect(simulation.events.some((event) => event.type === 'land')).toBe(false);
+    expect(simulation.state.stats.perfects).toBe(0);
+    expect(simulation.state.stats.totalFlips).toBe(0);
   });
 
   it('disables rotation at zero energy and provides a deterministic replay round-trip', () => {

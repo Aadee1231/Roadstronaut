@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  FIXED_DT, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY, MAX_RUN_SECONDS,
+  CAR_LENGTH, FIXED_DT, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY, MAX_RUN_SECONDS,
   LAUNCH_BOOST, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, SUPER_JUMP_VELOCITY,
   distanceAtTime, speedAtTime, timeAtDistance,
 } from '../../src/sim/constants';
@@ -77,6 +77,12 @@ function checkFairness(seed: number): void {
 
   for (const gap of segments.filter((segment) => segment.kind === 'gap')) {
     expect(course.surfaceAt((gap.x0 + gap.x1) / 2), `${gap.id} has no interior surface`).toBeNull();
+    const index = segments.indexOf(gap);
+    const approach = segments[index - 1];
+    if (approach?.kind !== 'launch') {
+      expect(['flat', 'platform']).toContain(approach?.kind);
+      expect(approach!.x1 - approach!.x0, `${gap.id} has a flat run-up`).toBeGreaterThanOrEqual(1.5 * CAR_LENGTH);
+    }
   }
 }
 
@@ -122,6 +128,38 @@ function runNoFlipBot(seed: number, seconds: number): Simulation {
     simulation.step(lookaheadJump(simulation));
   }
   return simulation;
+}
+
+function runAcrossFirstPlainGap(seed: number, jumpGap: boolean): { simulation: Simulation; gap: Hazard } {
+  const simulation = new Simulation(seed);
+  const segments = simulation.course.segmentsInRange(0, DISTANCE_150_SECONDS);
+  const gapSegment = segments.find((segment, index) => (
+    segment.kind === 'gap' && segments[index - 1]?.kind !== 'launch'
+  ));
+  if (!gapSegment) throw new Error(`seed ${seed} has no plain gap`);
+  const gap = simulation.course.hazardsAhead(0, DISTANCE_150_SECONDS).find((hazard) => (
+    hazard.kind === 'gap' && hazard.x === gapSegment.x0
+  ));
+  if (!gap) throw new Error(`seed ${seed} plain gap has no hazard`);
+  const jumpX = gap.x - gap.safeJumpReach * 0.08;
+
+  for (let tick = 0; tick < 60 * 120 && !simulation.state.crashed; tick += 1) {
+    const state = simulation.state;
+    if (state.x >= gap.x + gap.width + CAR_LENGTH / 2) break;
+    let held = false;
+    if (state.x < gap.x - state.speed * 0.5) {
+      held = lookaheadJump(simulation);
+    } else if (
+      jumpGap
+      && state.grounded
+      && state.x < jumpX
+      && state.x + state.speed * FIXED_DT >= jumpX
+    ) {
+      held = true;
+    }
+    simulation.step(held);
+  }
+  return { simulation, gap };
 }
 
 interface LaunchAttemptResult {
@@ -289,6 +327,17 @@ describe('contiguous deterministic course generator', () => {
 });
 
 describe('procedural gameplay fairness', () => {
+  it('falls into a plain gap without input and clears it with a lead-distance jump', () => {
+    const noJump = runAcrossFirstPlainGap(0, false);
+    expect(noJump.simulation.state.crashed).toBe(true);
+    expect(noJump.simulation.state.crashReason).toBe('fell');
+    expect(noJump.simulation.state.x).toBeGreaterThan(noJump.gap.x);
+
+    const jumped = runAcrossFirstPlainGap(0, true);
+    expect(jumped.simulation.state.crashed).toBe(false);
+    expect(jumped.simulation.state.x).toBeGreaterThanOrEqual(jumped.gap.x + jumped.gap.width + CAR_LENGTH / 2);
+  }, 30_000);
+
   it('keeps the opening safe and spaces onboarding hazards across 200 seeds', () => {
     for (let seed = 1; seed <= 200; seed += 1) {
       const course = createCourse(seed);

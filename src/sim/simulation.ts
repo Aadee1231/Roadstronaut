@@ -1,6 +1,7 @@
 import {
   AIRBORNE_FALL_LIMIT, CAR_HEIGHT, CAR_LENGTH, ENERGY_GROUNDED_REGEN, ENERGY_MAX,
-  FIXED_DT, GREAT_LIMIT, GRAVITY, JUMP_VELOCITY, LANDING_LIMIT, LAUNCH_BOOST,
+  FIXED_DT, GAP_FALL_LIMIT, GREAT_LIMIT, GRAVITY, JUMP_VELOCITY, LANDING_LIMIT, LAUNCH_BOOST,
+  MIN_REWARD_AIRTIME, SNAP_TOLERANCE,
   MAX_ANGULAR_SPEED, MAX_RUN_SECONDS, NEAR_MISS_CLEARANCE, PERFECT_LIMIT,
   ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND, START_SPEED, SUPER_JUMP_VELOCITY,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
@@ -14,6 +15,7 @@ export type SimEvent =
   | { type: 'comboUp'; count: number }
   | { type: 'flipComplete'; count: number }
   | { type: 'land'; quality: LandingQuality; flips: number; airtime: number; points: number }
+  | { type: 'touchdown' }
   | { type: 'nearMiss'; hazardId: string }
   | { type: 'crash'; reason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' };
 
@@ -65,6 +67,8 @@ export class Simulation {
   private airbornePressEligible = false;
   private flipRotation = 0;
   private previousX = 0;
+  private previousWheelBottoms: [number, number] = [Number.NaN, Number.NaN];
+  private rewardedLandingThisAirbornePhase = false;
   private lastMilestone = 0;
 
   constructor(seed: number) {
@@ -104,6 +108,10 @@ export class Simulation {
       return;
     }
     const dt = FIXED_DT;
+    this.previousWheelBottoms = [
+      this.wheelBottomAt(WHEELBASE / 2),
+      this.wheelBottomAt(-WHEELBASE / 2),
+    ];
     state.elapsed += dt;
     state.speed = speedAtTime(state.elapsed);
     state.vx = state.speed;
@@ -135,6 +143,7 @@ export class Simulation {
         state.flips = 0;
         this.flipRotation = 0;
         this.airbornePressEligible = false;
+        this.rewardedLandingThisAirbornePhase = false;
         if (launchWindow) {
           state.vy = state.speed * sin(surface.slope) + SUPER_JUMP_VELOCITY + LAUNCH_BOOST;
           this.events.push({ type: 'superLaunch' });
@@ -144,9 +153,8 @@ export class Simulation {
         }
       } else if (!surface) {
         this.leaveGround();
-        if (previousSurface && previousSurface.slope < -0.08) {
-          const launch = previousSurface.segment.kind === 'launch';
-          state.vy = state.speed * sin(previousSurface.slope) + (launch ? LAUNCH_BOOST : 0);
+        if (previousSurface?.segment.kind === 'launch') {
+          state.vy = state.speed * sin(previousSurface.slope) + LAUNCH_BOOST;
         }
       } else if (
         !newPress
@@ -155,8 +163,11 @@ export class Simulation {
         && previousSurface.slope < -0.08
       ) {
         const launch = previousSurface.segment.kind === 'launch';
-        this.leaveGround();
-        state.vy = state.speed * sin(previousSurface.slope) + (launch ? LAUNCH_BOOST : 0);
+        const takeoffVelocity = state.speed * sin(previousSurface.slope) + (launch ? LAUNCH_BOOST : 0);
+        if (takeoffVelocity < -150) {
+          this.leaveGround();
+          state.vy = takeoffVelocity;
+        }
       }
     } else {
       if (newPress) this.airbornePressEligible = true;
@@ -184,7 +195,7 @@ export class Simulation {
         state.flips = fullFlips;
         this.events.push({ type: 'flipComplete', count: state.flips });
       }
-      this.checkLanding();
+      if (!this.checkPitFall()) this.checkLanding();
     }
 
     if (!state.crashed) this.checkCollision();
@@ -209,6 +220,12 @@ export class Simulation {
       bottom: this.state.y + yOffset + WHEEL_RADIUS,
       surface: this.course.surfaceAt(x),
     };
+  }
+
+  private wheelBottomAt(longitudinalOffset: number): number {
+    const cosine = cos(this.state.angle);
+    const sine = sin(this.state.angle);
+    return this.state.y + sine * longitudinalOffset + cosine * WHEEL_VERTICAL_OFFSET + WHEEL_RADIUS;
   }
 
   private syncGroundPose(fallback: Surface): void {
@@ -246,6 +263,7 @@ export class Simulation {
     state.flips = 0;
     this.flipRotation = 0;
     this.airbornePressEligible = false;
+    this.rewardedLandingThisAirbornePhase = false;
     this.events.push({ type: 'takeoff' });
   }
 
@@ -275,7 +293,12 @@ export class Simulation {
       return;
     }
 
-    const contacts = wheels.filter((wheel) => wheel.surface && wheel.bottom >= wheel.surface.y);
+    const snapLimit = SNAP_TOLERANCE + Math.abs(state.vy) * FIXED_DT;
+    const contacts = wheels.filter((wheel, index) => (
+      wheel.surface
+      && wheel.bottom >= wheel.surface.y
+      && this.previousWheelBottoms[index]! <= wheel.surface.y + snapLimit
+    ));
     if (contacts.length === 0) return;
     const contact = contacts.reduce((highest, wheel) => (
       (wheel.surface?.y ?? Infinity) < (highest.surface?.y ?? Infinity) ? wheel : highest
@@ -290,6 +313,13 @@ export class Simulation {
     state.grounded = true;
     state.y = surface.y - contact.yOffset - WHEEL_RADIUS;
     state.vy = 0;
+    if (this.rewardedLandingThisAirbornePhase || (state.airtime < MIN_REWARD_AIRTIME && state.flips === 0)) {
+      this.events.push({ type: 'touchdown' });
+      state.flips = 0;
+      this.flipRotation = 0;
+      return;
+    }
+    this.rewardedLandingThisAirbornePhase = true;
     const quality: LandingQuality = difference <= PERFECT_LIMIT ? 'perfect' : difference <= GREAT_LIMIT ? 'great' : 'clean';
     const oldCombo = state.combo;
     if (state.flips > 0 || quality === 'perfect') {
@@ -306,6 +336,27 @@ export class Simulation {
 
   private bodyBottom(): number {
     return this.bodyCircles().reduce((bottom, circle) => max(bottom, circle.y + circle.radius), -Infinity);
+  }
+
+  private checkPitFall(): boolean {
+    const state = this.state;
+    const bodyLeft = state.x - CAR_LENGTH / 2;
+    const bodyRight = state.x + CAR_LENGTH / 2;
+    const bodyBottom = this.bodyBottom();
+    const gaps = this.course.segmentsInRange(bodyLeft, bodyRight).filter((segment) => (
+      segment.kind === 'gap' && bodyRight >= segment.x0 && bodyLeft < segment.x1
+    ));
+    for (const gap of gaps) {
+      if (bodyRight >= gap.x1 && bodyBottom > gap.y1) {
+        this.crash('fell');
+        return true;
+      }
+      if (bodyBottom > max(gap.y0, gap.y1) + GAP_FALL_LIMIT) {
+        this.crash('fell');
+        return true;
+      }
+    }
+    return false;
   }
 
   private checkNearMisses(): void {

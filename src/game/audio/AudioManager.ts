@@ -23,39 +23,82 @@ const SOUND: Record<string, string> = {
   newBest: '/audio/sfx-new-best.mp3',
 };
 
+declare global {
+  interface Window {
+    __thrustshiftAudio?: { playing(): string[] };
+  }
+}
+
 export class AudioManager {
   private unlocked = false;
   private muted = false;
   private currentMusic: HTMLAudioElement | null = null;
+  private currentMusicKey: 'menu' | 'game' | null = null;
   private engine: HTMLAudioElement | null = null;
   private wind: HTMLAudioElement | null = null;
   private readonly effects = new Map<string, HTMLAudioElement>();
   private readonly activeEffects = new Set<HTMLAudioElement>();
   private readonly onUnlock = (): void => { void this.unlock(); };
+  private runPaused = false;
+  private visibilityPaused = false;
+  private readonly debugHook = { playing: (): string[] => this.playingKeys() };
+  private readonly onVisibilityChange = (): void => {
+    this.visibilityPaused = document.visibilityState === 'hidden';
+    if (this.visibilityPaused) {
+      this.stopLoops();
+      this.stopActiveEffects();
+      this.currentMusic?.pause();
+    } else if (this.unlocked) {
+      void this.resumeMusic();
+    }
+  };
 
   constructor(private readonly events: Phaser.Events.EventEmitter) {
     try { this.muted = localStorage.getItem('thrustshift.muted') === 'true'; } catch { this.muted = false; }
     document.addEventListener('pointerdown', this.onUnlock, { once: true, passive: true, capture: true });
     document.addEventListener('keydown', this.onUnlock, { once: true });
-    this.events.on('run-start', () => this.playMusic('game'));
-    this.events.on('run-quit', () => this.playMusic('menu'));
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    window.__thrustshiftAudio = this.debugHook;
+    this.events.on('run-start', () => {
+      this.runPaused = false;
+      this.stopLoops();
+      this.stopActiveEffects();
+      void this.playMusic('game');
+    });
+    this.events.on('run-pause', () => {
+      this.runPaused = true;
+      this.stopLoops();
+      this.stopActiveEffects();
+      if (this.currentMusic) this.currentMusic.volume = this.muted ? 0 : 0.28 * 0.35;
+    });
+    this.events.on('run-resume', () => {
+      this.runPaused = false;
+      if (this.currentMusic) this.currentMusic.volume = this.muted ? 0 : 0.28;
+    });
+    this.events.on('run-quit', () => {
+      this.runPaused = false;
+      this.stopLoops();
+      this.stopActiveEffects();
+      void this.playMusic('menu');
+    });
     this.events.on('audio-mute', (muted: boolean) => this.setMuted(muted));
     this.events.on('ui-sound', (key: string) => this.play(key));
     this.events.on('run-new-best', () => this.play('newBest'));
     this.events.on('run-state', (state: SimulationState, list: readonly SimEvent[]) => this.onSimulation(state, list));
     this.events.on('run-finished', () => {
-      this.stopLoop(this.engine);
-      this.stopLoop(this.wind);
-      this.play('crash');
+      this.stopLoops();
+      this.stopActiveEffects();
     });
   }
 
   destroy(): void {
     document.removeEventListener('pointerdown', this.onUnlock, true);
     document.removeEventListener('keydown', this.onUnlock);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.currentMusic?.pause();
-    this.stopLoop(this.engine);
-    this.stopLoop(this.wind);
+    this.stopLoops();
+    this.stopActiveEffects();
+    if (window.__thrustshiftAudio === this.debugHook) delete window.__thrustshiftAudio;
   }
 
   setMuted(muted: boolean): void {
@@ -69,11 +112,17 @@ export class AudioManager {
   private async unlock(): Promise<void> {
     if (this.unlocked) return;
     this.unlocked = true;
-    await this.playMusic('menu');
+    await this.playMusic(this.currentMusicKey ?? 'menu');
   }
 
   private async playMusic(which: 'menu' | 'game'): Promise<void> {
-    if (!this.unlocked || this.currentMusic?.src.endsWith(MUSIC[which])) return;
+    this.currentMusicKey = which;
+    if (!this.unlocked || this.visibilityPaused) return;
+    if (this.currentMusic?.src.endsWith(MUSIC[which])) {
+      this.currentMusic.volume = this.muted ? 0 : this.runPaused ? 0.28 * 0.35 : 0.28;
+      if (this.currentMusic.paused) void this.currentMusic.play().catch(() => undefined);
+      return;
+    }
     this.currentMusic?.pause();
     const music = new Audio(MUSIC[which]);
     music.loop = true;
@@ -85,11 +134,11 @@ export class AudioManager {
 
   private onSimulation(state: SimulationState, events: readonly SimEvent[]): void {
     if (this.unlocked) {
-      if (!state.grounded && !state.crashed) {
+      if (!state.grounded && !state.crashed && !this.runPaused) {
         this.startLoop('wind');
         if (this.wind) this.wind.volume = this.muted ? 0 : Math.min(0.18, 0.06 + state.airtime * 0.025);
       } else this.stopLoop(this.wind);
-      if (state.grounded && !state.crashed) {
+      if (state.grounded && !state.crashed && !this.runPaused) {
         this.startLoop('engine');
         if (this.engine) {
           this.engine.playbackRate = Math.min(1.55, Math.max(0.75, state.speed / 570));
@@ -97,6 +146,7 @@ export class AudioManager {
         }
       } else this.stopLoop(this.engine);
     }
+    if (state.crashed || this.runPaused || this.visibilityPaused) return;
     for (const event of events) {
       if (event.type === 'jump') this.play('jump');
       else if (event.type === 'superLaunch') { this.play('superLaunch'); this.play('rocket'); }
@@ -109,12 +159,15 @@ export class AudioManager {
   }
 
   private play(key: string): void {
-    if (!this.unlocked || this.muted) return;
+    if (!this.unlocked || this.muted || this.visibilityPaused || this.runPaused) return;
+    const source = SOUND[key];
+    if (!source) return;
     const base = this.effects.get(key) ?? new Audio(SOUND[key]);
     this.effects.set(key, base);
     const effect = base.cloneNode(true) as HTMLAudioElement;
     const volume = key === 'crash' ? 0.62 : 0.42;
     effect.dataset.level = String(volume);
+    effect.dataset.key = key;
     effect.volume = this.muted ? 0 : volume;
     this.activeEffects.add(effect);
     effect.addEventListener('ended', () => this.activeEffects.delete(effect), { once: true });
@@ -140,5 +193,38 @@ export class AudioManager {
       audio.pause();
       audio.currentTime = 0;
     }
+  }
+
+  private stopLoops(): void {
+    this.stopLoop(this.engine);
+    this.stopLoop(this.wind);
+  }
+
+  private stopActiveEffects(): void {
+    for (const effect of this.activeEffects) {
+      effect.pause();
+      effect.currentTime = 0;
+      this.activeEffects.delete(effect);
+    }
+  }
+
+  private async resumeMusic(): Promise<void> {
+    if (!this.currentMusic) {
+      await this.playMusic(this.currentMusicKey ?? 'menu');
+      return;
+    }
+    this.currentMusic.volume = this.muted ? 0 : this.runPaused ? 0.28 * 0.35 : 0.28;
+    try { await this.currentMusic.play(); } catch { this.unlocked = false; }
+  }
+
+  private playingKeys(): string[] {
+    const keys: string[] = [];
+    if (this.currentMusic && !this.currentMusic.paused && this.currentMusicKey) keys.push(`music-${this.currentMusicKey}`);
+    if (this.engine && !this.engine.paused) keys.push('engine');
+    if (this.wind && !this.wind.paused) keys.push('wind');
+    for (const effect of this.activeEffects) {
+      if (!effect.paused && effect.dataset.key) keys.push(effect.dataset.key);
+    }
+    return keys;
   }
 }
