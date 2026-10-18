@@ -38,6 +38,8 @@ export const RECOVERY_ANGULAR_SPEED = 10;
 /** Starts rail auto-recovery this long before predicted ground contact. */
 export const RECOVERY_MARGIN = 0.12;
 export const LANDING_LIMIT = 38 * Math.PI / 180;
+/** Auto-recovery only takes over when both current and predicted error exceed this angle. */
+export const RECOVERY_TRIGGER_OFF = LANDING_LIMIT - 2 * Math.PI / 180;
 export const PERFECT_LIMIT = 7 * Math.PI / 180;
 export const GREAT_LIMIT = 16 * Math.PI / 180;
 export const MIN_REWARD_AIRTIME = 0.3;

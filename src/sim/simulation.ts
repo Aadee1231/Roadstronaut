@@ -6,7 +6,7 @@ import {
   LANDING_LIMIT, LAUNCH_BOOST, LAUNCH_WINDOW_FRACTION,
   MIN_AUTO_TAKEOFF_VELOCITY, MIN_REWARD_AIRTIME, MAX_ANGULAR_SPEED, MAX_RUN_SECONDS,
   NEAR_MISS_CLEARANCE, PERFECT_LIMIT, ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND,
-  RECOVERY_ANGULAR_SPEED, RECOVERY_MARGIN, SUCTION_ALIGN, SUCTION_POINTS_PER_SECOND,
+  RECOVERY_ANGULAR_SPEED, RECOVERY_MARGIN, RECOVERY_TRIGGER_OFF, SUCTION_ALIGN, SUCTION_POINTS_PER_SECOND,
   SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
 } from './constants';
@@ -24,7 +24,7 @@ export type SimEvent =
   | { type: 'touchdown' }
   | { type: 'hardLanding' }
   | { type: 'thrusterBurst' }
-  | { type: 'railRecovery' }
+  | { type: 'railRecovery'; hardSnap?: boolean }
   | { type: 'suctionEngage' }
   | { type: 'suctionRelease'; reason: 'end' | 'empty' }
   | { type: 'suctionBonus'; seconds: number; points: number }
@@ -93,6 +93,7 @@ export class Simulation {
   private suctionBonusElapsed = 0;
   private recovering = false;
   private recoveryTarget = 0;
+  private railPhase = false;
 
   constructor(seed: number) {
     this.course = createCourse(seed);
@@ -161,6 +162,7 @@ export class Simulation {
     state.vx = state.speed;
     this.previousX = state.x;
     state.x += state.vx * dt;
+    this.updateRailPhase();
     state.fanRailVisible = state.fanRailVisible
       || this.course.ceilingsInRange(state.x, state.x + state.speed * 8).length > 0;
     const previousDistance = state.stats.distance;
@@ -182,11 +184,12 @@ export class Simulation {
       const previousSurface = this.course.surfaceAt(this.previousX);
       const surface = this.course.surfaceAt(state.x);
       if (surface) this.syncGroundPose(surface);
-      if (newPress && surface) {
+      if (newPress && surface && surface.segment.kind !== 'quarter') {
         const launchWindow = surface.segment.kind === 'launch'
           && state.x >= surface.segment.x1 - (surface.segment.x1 - surface.segment.x0) * LAUNCH_WINDOW_FRACTION;
         state.grounded = false;
         state.airtime = 0;
+        this.startRailPhaseAtTakeoff();
         state.flips = 0;
         this.flipRotation = 0;
         this.airbornePressEligible = false;
@@ -207,8 +210,7 @@ export class Simulation {
           state.vy = state.speed * sin(previousSurface.slope) + LAUNCH_BOOST;
         }
       } else if (
-        !newPress
-        && previousSurface
+        previousSurface
         && previousSurface.segment.id !== surface.segment.id
         && previousSurface.slope < -0.08
       ) {
@@ -267,6 +269,7 @@ export class Simulation {
       if (!state.inverted && !state.crashed && !this.checkPitFall()) this.checkLanding();
     }
 
+    this.updateRailPhase();
     if (!state.crashed) this.checkCollision();
     if (!state.crashed) this.checkNearMisses();
     if (!state.grounded && state.y > this.groundReferenceY(state.x) + AIRBORNE_FALL_LIMIT) this.crash('fell');
@@ -327,6 +330,7 @@ export class Simulation {
     const state = this.state;
     if (!state.grounded) return;
     state.grounded = false;
+    this.startRailPhaseAtTakeoff();
     state.vy = 0;
     state.airtime = 0;
     state.flips = 0;
@@ -354,11 +358,8 @@ export class Simulation {
     return this.bodyCircles().reduce((top, circle) => min(top, circle.y - circle.radius), Infinity);
   }
 
-  private maybeStartRailRecovery(): void {
+  private predictRailContact(): { t: number | null; slope: number } {
     const state = this.state;
-    if (state.grounded || state.inverted || this.recovering) return;
-    if (!this.course.railZoneAt(state.x)) return;
-
     const surface = this.course.surfaceAt(state.x);
     const wheels = [this.wheelPoint(WHEELBASE / 2), this.wheelPoint(-WHEELBASE / 2)];
     const lowestWheelBottom = max(wheels[0].bottom, wheels[1].bottom);
@@ -377,41 +378,51 @@ export class Simulation {
     let immediateWheelSurface: Surface | null = null;
     for (const wheel of wheels) {
       const wheelSurface = wheel.surface;
-      if (!wheelSurface) continue;
-      const wheelTime = solveTimeToGround(wheelSurface.y - wheel.bottom);
-      if (wheelTime === null) {
-        if (wheel.bottom >= wheelSurface.y
-          && (immediateWheelSurface === null || wheelSurface.y < immediateWheelSurface.y)) {
-          immediateWheelSurface = wheelSurface;
-        }
-        continue;
+      if (wheelSurface && wheel.bottom >= wheelSurface.y
+        && (immediateWheelSurface === null || wheelSurface.y < immediateWheelSurface.y)) {
+        immediateWheelSurface = wheelSurface;
       }
-      if (timeToGround !== null && wheelTime >= timeToGround) continue;
-      timeToGround = wheelTime;
-      const predictedWheelX = wheel.x + state.vx * wheelTime;
-      targetSlope = this.course.surfaceAt(predictedWheelX)?.slope ?? wheelSurface.slope;
     }
     if (immediateWheelSurface !== null) {
       timeToGround = 0;
       targetSlope = immediateWheelSurface.slope;
     }
-    const angleOff = Math.abs(normalizeAngle(state.angle - targetSlope));
-    if (angleOff <= LANDING_LIMIT * 0.75) return;
-    const immediate = timeToGround === null || timeToGround <= RECOVERY_MARGIN;
-    const tooLate = state.vy > 0
-      && timeToGround !== null
-      && timeToGround <= angleOff / RECOVERY_ANGULAR_SPEED + RECOVERY_MARGIN;
-    if (!immediate && !tooLate) return;
+    return { t: timeToGround, slope: targetSlope };
+  }
 
+  private maybeStartRailRecovery(): void {
+    const state = this.state;
+    if (state.grounded || this.recovering) return;
+    const railZone = this.course.railZoneAt(state.x);
+    if (railZone) this.railPhase = true;
+    if (!this.railPhase && !railZone) return;
+    if (state.inverted || state.vy <= 0) return;
+
+    const { t: timeToGround, slope: targetSlope } = this.predictRailContact();
+    const t = timeToGround ?? 0;
+    const currentOff = Math.abs(normalizeAngle(state.angle - targetSlope));
+    const predictedOff = Math.abs(normalizeAngle(
+      state.angle + state.angularVelocity * t - targetSlope,
+    ));
+    const window = currentOff / RECOVERY_ANGULAR_SPEED + RECOVERY_MARGIN;
+    if (t > window || min(currentOff, predictedOff) <= RECOVERY_TRIGGER_OFF) return;
+
+    this.startRailRecovery(targetSlope);
+  }
+
+  private startRailRecovery(targetSlope: number, hardSnap = false): void {
     this.recovering = true;
     this.recoveryTarget = targetSlope;
-    state.recovering = true;
-    state.flips = 0;
+    this.state.recovering = true;
+    this.state.flips = 0;
     this.flipRotation = 0;
-    this.events.push({ type: 'railRecovery' });
+    this.events.push(hardSnap
+      ? { type: 'railRecovery', hardSnap: true }
+      : { type: 'railRecovery' });
   }
 
   private stepRailRecovery(dt: number): void {
+    this.recoveryTarget = this.predictRailContact().slope;
     const delta = normalizeAngle(this.recoveryTarget - this.state.angle);
     if (Math.abs(delta) <= RECOVERY_ANGULAR_SPEED * dt) {
       this.state.angle = this.recoveryTarget;
@@ -426,6 +437,21 @@ export class Simulation {
     this.recovering = false;
     this.recoveryTarget = 0;
     this.state.recovering = false;
+  }
+
+  private updateRailPhase(): void {
+    const state = this.state;
+    if ((!state.grounded || state.inverted) && this.course.railZoneAt(state.x)) {
+      this.railPhase = true;
+    }
+  }
+
+  private startRailPhaseAtTakeoff(): void {
+    this.railPhase = this.course.railZoneAt(this.state.x) !== null;
+  }
+
+  private clearRailPhase(): void {
+    this.railPhase = false;
   }
 
   private checkCeilingContact(): void {
@@ -501,7 +527,7 @@ export class Simulation {
 
   private checkLanding(): void {
     const state = this.state;
-    const recovering = this.recovering;
+    let recovering = this.recovering;
     if (state.vy < 0) return;
     const wheels = [this.wheelPoint(WHEELBASE / 2), this.wheelPoint(-WHEELBASE / 2)];
     const roofContact = this.bodyCircles().some((circle) => {
@@ -511,8 +537,12 @@ export class Simulation {
         && Math.abs(normalizeAngle(state.angle - surface.slope)) > LANDING_LIMIT;
     });
     if (roofContact && !recovering) {
-      this.crash('bad-landing');
-      return;
+      if (!this.railPhase) {
+        this.crash('bad-landing');
+        return;
+      }
+      this.startRailRecovery(this.course.surfaceAt(state.x)?.slope ?? 0, true);
+      recovering = true;
     }
 
     const snapLimit = SNAP_TOLERANCE + Math.abs(state.vy) * FIXED_DT;
@@ -527,14 +557,14 @@ export class Simulation {
     ));
     const surface = contact.surface!;
     const difference = Math.abs(normalizeAngle(state.angle - surface.slope));
-    if (difference > LANDING_LIMIT && !recovering) {
-      this.crash('bad-landing');
-      return;
-    }
     const impactSpeed = Math.abs(-state.vx * sin(surface.slope) + state.vy * cos(surface.slope));
-    if (impactSpeed > CRASH_IMPACT && !recovering) {
-      this.crash('bad-landing');
-      return;
+    if (!recovering && (difference > LANDING_LIMIT || impactSpeed > CRASH_IMPACT)) {
+      if (!this.railPhase) {
+        this.crash('bad-landing');
+        return;
+      }
+      this.startRailRecovery(surface.slope, true);
+      recovering = true;
     }
 
     state.grounded = true;
@@ -552,6 +582,7 @@ export class Simulation {
       this.flipRotation = 0;
       this.events.push({ type: 'touchdown' });
       this.clearRailRecovery();
+      this.clearRailPhase();
       return;
     }
     state.y = surface.y - contact.yOffset - WHEEL_RADIUS;
@@ -560,6 +591,7 @@ export class Simulation {
       state.flips = 0;
       this.flipRotation = 0;
       this.clearRailRecovery();
+      this.clearRailPhase();
       return;
     }
     this.rewardedLandingThisAirbornePhase = true;
@@ -580,6 +612,7 @@ export class Simulation {
     state.flips = 0;
     this.flipRotation = 0;
     this.clearRailRecovery();
+    this.clearRailPhase();
   }
 
   private bodyBottom(): number {
@@ -667,6 +700,7 @@ export class Simulation {
     this.state.crashReason = reason;
     this.state.combo = 0;
     this.clearRailRecovery();
+    this.clearRailPhase();
     this.events.push({ type: 'crash', reason });
   }
 

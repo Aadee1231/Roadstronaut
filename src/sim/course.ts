@@ -536,6 +536,7 @@ export class Course {
     this.ceilings.push(ceiling);
     this.appendFlat(railLength);
     this.appendSegment('slope', speed * 0.25, BASE_Y);
+    this.appendFlat(speed * 0.9);
     this.protectedUntil = this.x;
     this.railZones.push({ ceiling, x0, x1: this.protectedUntil });
   }

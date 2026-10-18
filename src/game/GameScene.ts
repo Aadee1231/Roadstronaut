@@ -59,6 +59,11 @@ export class GameScene extends Phaser.Scene {
   private previousX = 0;
   private previousY = 0;
   private previousAngle = 0;
+  private displayedAngle = 0;
+  private angleBlendFrom = 0;
+  private angleBlendTo = 0;
+  private angleBlendElapsed = 0;
+  private angleBlendActive = false;
 
   private skies: Phaser.GameObjects.Image[] = [];
   private stars!: Phaser.GameObjects.TileSprite;
@@ -185,6 +190,16 @@ export class GameScene extends Phaser.Scene {
       this.inputHeld = held;
       this.simulation.step(held);
       if (this.activeRun) this.inputLog.push(held);
+      const railRecoveryIndex = this.simulation.events.findIndex((event) => event.type === 'railRecovery');
+      const touchdownIndex = this.simulation.events.findIndex((event) => event.type === 'touchdown');
+      const snappedRecovery = railRecoveryIndex >= 0 && touchdownIndex > railRecoveryIndex;
+      const angleDifference = Math.atan2(
+        Math.sin(this.simulation.state.angle - this.displayedAngle),
+        Math.cos(this.simulation.state.angle - this.displayedAngle),
+      );
+      if (snappedRecovery || (touchdownIndex >= 0 && Math.abs(angleDifference) > 0.6)) {
+        this.beginCarAngleBlend(this.simulation.state.angle);
+      }
       for (const event of this.simulation.events) this.frameEvents.push(event);
       this.accumulator -= FIXED_DT;
       if (this.simulation.state.crashed) {
@@ -234,12 +249,24 @@ export class GameScene extends Phaser.Scene {
     this.previousX = simulation.state.x;
     this.previousY = simulation.state.y;
     this.previousAngle = simulation.state.angle;
+    this.displayedAngle = simulation.state.angle;
+    this.angleBlendFrom = simulation.state.angle;
+    this.angleBlendTo = simulation.state.angle;
+    this.angleBlendElapsed = 0;
+    this.angleBlendActive = false;
     this.camY = Number.NaN;
     this.trail.length = 0;
     this.crashTimer = 0;
     this.car.setVisible(true).setAlpha(1);
     this.carBody.clearTint();
     this.carBody.setTexture(readPaint() === 'coral' ? 'car-body-coral' : 'car-body');
+  }
+
+  private beginCarAngleBlend(targetAngle: number): void {
+    this.angleBlendFrom = this.displayedAngle;
+    this.angleBlendTo = targetAngle;
+    this.angleBlendElapsed = 0;
+    this.angleBlendActive = true;
   }
 
   private pauseRun(): void {
@@ -374,6 +401,17 @@ export class GameScene extends Phaser.Scene {
     const x = this.previousX + (state.x - this.previousX) * t;
     const y = this.previousY + (state.y - this.previousY) * t;
     const angle = this.previousAngle + (state.angle - this.previousAngle) * t;
+    let displayedAngle = angle;
+    if (this.angleBlendActive) {
+      this.angleBlendElapsed += dt;
+      const blend = Math.min(1, this.angleBlendElapsed / 0.09);
+      const angleDelta = Math.atan2(
+        Math.sin(this.angleBlendTo - this.angleBlendFrom),
+        Math.cos(this.angleBlendTo - this.angleBlendFrom),
+      );
+      displayedAngle = this.angleBlendFrom + angleDelta * blend;
+      if (blend >= 1) this.angleBlendActive = false;
+    }
     const zoom = this.zoom;
     const viewW = this.scale.width / zoom;
     const viewH = this.scale.height / zoom;
@@ -391,7 +429,8 @@ export class GameScene extends Phaser.Scene {
 
     this.drawBackground(worldLeft, worldTop, viewH);
     this.drawTrack(worldLeft, worldTop, viewW, viewH, state.elapsed);
-    this.drawCar(x, y, angle, dt);
+    this.drawCar(x, y, angle, dt, displayedAngle);
+    this.displayedAngle = displayedAngle;
     this.drawForeground(worldLeft, state.speed, dt);
   }
 
@@ -671,9 +710,9 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private drawCar(x: number, y: number, angle: number, dt: number): void {
+  private drawCar(x: number, y: number, angle: number, dt: number, displayedAngle = angle): void {
     const state = this.simulation.state;
-    this.car.setPosition(x, y).setRotation(angle);
+    this.car.setPosition(x, y).setRotation(displayedAngle);
     if (!state.crashed) this.wheelSpin += (state.speed * dt) / WHEEL_WORLD_R;
     for (const w of this.wheels) w.setRotation(this.wheelSpin);
     this.flameTimer = Math.max(0, this.flameTimer - dt);

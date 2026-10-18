@@ -83,18 +83,28 @@ CAR_LENGTH`. Their width remains bounded by the normal jump reach. The only
 current terrain that may automatically propel a car across a gap is a launch
 ramp; a concave three-piece quarter-pipe is a separate automatic suction-route
 launch. Fan rails span `0.95 ×` the speed at their start, over a safe flat floor;
-their quarter-pipe approach and down-sloping landing ramp remain deterministic
-course geometry. The fixed-step simulation owns all contact and movement
-outcomes, while renderers may interpolate but must not alter state.
+their quarter-pipe approach, down-sloping landing ramp, and `0.9 ×`-speed flat
+runout are protected from hazards. The fixed-step simulation owns all contact
+and movement outcomes, while renderers may interpolate but must not alter
+state.
 
 ## Rail auto-recovery
 
-Inside a suction rail zone, a descending car that remains misaligned near its
-predicted landing is automatically rotated toward the landing slope at
-`RECOVERY_ANGULAR_SPEED`. A recovery landing is a safe, unrewarded touchdown;
-players who align before the recovery threshold retain normal landing rewards.
+The rail zone spans the quarter-pipe start through the end of the flat runout
+after the exit slope. While airborne or inverted in that zone, a car remains
+eligible for recovery until it genuinely grounds, even if it travels beyond
+the zone boundary before landing. A descending car that remains misaligned
+near its predicted landing is automatically rotated toward the landing slope
+at `RECOVERY_ANGULAR_SPEED` only when both its current and projected landing
+error exceed `RECOVERY_TRIGGER_OFF`. The projected angle includes the current
+angular velocity over the time-to-ground estimate. A recovery landing is a
+safe, unrewarded touchdown; a car already within the trigger angle, or rotating
+toward upright fast enough, retains normal landing control and rewards. As a
+last resort, an otherwise-crashing contact during a sticky rail phase becomes
+a `hardSnap` recovery touchdown.
 
 | Constant | Value | Purpose |
 | --- | ---: | --- |
 | `RECOVERY_ANGULAR_SPEED` | `10 rad/s` | Constant angular speed used to right the car. |
 | `RECOVERY_MARGIN` | `0.12 s` | Additional time margin used to decide when correction must start. |
+| `RECOVERY_TRIGGER_OFF` | `LANDING_LIMIT - 2°` (`36°`) | Minimum current and predicted angle error before recovery takes control. |
