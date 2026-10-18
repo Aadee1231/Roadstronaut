@@ -2,6 +2,7 @@ import type Phaser from 'phaser';
 import { getLeaderboard, startRun, submitScore, updateNickname, type LeaderboardResponse } from '../net/api';
 import type { RunFinished } from '../game/GameScene';
 import type { SimulationState } from '../sim/simulation';
+import { formatDistance, unitsPerSecondToMph } from '../sim/units';
 
 const KEYS = {
   playerId: 'thrustshift.playerId',
@@ -53,6 +54,8 @@ export class GameUI {
   private mode: LeaderboardResponse['mode'] = 'dev-memory';
   private period: 'all' | 'week' = 'all';
   private gameOverAt = 0;
+  private fanRailMessageShown = false;
+  private milestoneCount = 0;
   private scoreAnimationFrame = 0;
   private readonly actions: Record<string, (button: HTMLButtonElement) => void>;
   private readonly onGameFinished = (result: RunFinished): void => { void this.finishRun(result); };
@@ -66,16 +69,16 @@ export class GameUI {
     root.innerHTML = `
       <div class="ui-vignette"></div>
       <section class="screen-panel menu-panel" id="menu-screen" aria-label="Main menu">
-        <div class="menu-topline"><span class="edition">VX-1 / NIGHT DRIVE EDITION</span><button class="icon-button sound-button" data-action="mute" aria-label="Toggle sound"></button></div>
-        <div class="brand-kicker"><span class="brand-mark"></span> ORIGINAL ROCKET-CAR STUNT ARCADE</div>
+        <div class="menu-topline"><button class="icon-button sound-button" data-action="mute" aria-label="Toggle sound"></button></div>
         <h1 class="wordmark">THRUST<span>SHIFT</span></h1>
+        <p class="menu-subtitle">UNOFFICIAL ROADSTER STUNT CHALLENGE</p>
         <p class="tagline">FLIP. FLY. SURVIVE.</p>
         <div class="menu-actions">
           <button class="button button-primary" data-action="play"><span class="button-icon">▶</span> START ENGINE</button>
-          <div class="secondary-actions"><button class="button button-ghost" data-action="leaderboard">LEADERBOARD</button><button class="button button-ghost" data-action="howto">HOW TO PLAY</button></div>
+          <div class="secondary-actions"><button class="button button-ghost" data-action="leaderboard">LEADERBOARD</button><button class="button button-ghost" data-action="howto">HOW TO PLAY</button><button class="button button-ghost" data-action="about">ABOUT</button></div>
         </div>
         <button class="nickname-chip" data-action="nickname"><span class="online-dot"></span><span class="nickname-label"></span><span class="edit-glyph">EDIT ↗</span></button>
-        <div class="menu-bottom"><span class="version-tag">T/S — 01</span><span>UNOFFICIAL FAN-INSPIRED GAME. NOT AFFILIATED WITH ANY AUTOMAKER.</span><span>BEST <b class="menu-best">000000</b></span></div>
+        <div class="menu-bottom"><span>UNOFFICIAL FAN-MADE GAME. NOT AFFILIATED WITH TESLA OR SPACEX.</span><span>BEST <b class="menu-best">000000</b></span></div>
       </section>
 
       <section class="hud is-hidden" id="hud" aria-label="Game status">
@@ -88,7 +91,7 @@ export class GameUI {
             <div class="energy-panel"><div class="meter-heading"><span>THRUSTER</span><b id="energy-value">100</b></div><div class="energy-track"><div class="energy-fill" id="energy-fill"></div></div></div>
             <div class="energy-panel fan-panel is-hidden" id="fan-panel"><div class="meter-heading"><span>FAN</span><b id="fan-value">100</b></div><div class="energy-track"><div class="energy-fill fan-fill" id="fan-fill"></div></div></div>
           </div>
-          <div class="speed-panel"><strong id="speed-value">430</strong><span>KM/H</span><small id="distance-value">0 M</small></div>
+          <div class="speed-panel"><strong id="speed-value">35</strong><span>MPH</span><small id="distance-value">0 FT</small></div>
         </div>
         <div class="tutorial-hint is-hidden" id="tutorial-hint"></div>
         <div class="feedback-stack" id="feedback-stack" aria-live="polite"></div>
@@ -119,10 +122,23 @@ export class GameUI {
 
       <section class="screen-panel modal-panel howto-panel is-hidden" id="howto-screen" aria-label="How to play">
         <div class="panel-heading"><div><span class="panel-eyebrow">FLIGHT SCHOOL</span><h2>STAY ON THRUST</h2></div><button class="icon-button close-button" data-action="close-panel" aria-label="Close">×</button></div>
-        <div class="howto-row"><span class="control-key">SPACE<br>↑<br>TAP</span><div><b>JUMP THE LINE</b><p>Tap to leap over hazards. Catch a glowing launch ramp for extra airtime.</p></div></div>
-        <div class="howto-row"><span class="control-key">HOLD</span><div><b>FLIP IN THE AIR</b><p>After takeoff, press and hold to rotate forward. Release to level out. Each full flip pays big.</p></div></div>
+        <div class="howto-row"><span class="control-key">SPACE<br>↑<br>TAP</span><div><b>JUMP THE LINE</b><p>Tap to jump gaps and hazards. Catch a glowing launch ramp for extra airtime.</p></div></div>
+        <div class="howto-row"><span class="control-key">AIR<br>TAP + HOLD</span><div><b>BURST & FLIP</b><p>A fresh tap in the air fires a cold-gas burst. Keep holding to rotate; release to level out.</p></div></div>
         <div class="howto-row"><span class="control-key">RELEASE</span><div><b>STICK THE LANDING</b><p>Let go to stabilize. Hit the ground level for a perfect landing bonus.</p></div></div>
-        <div class="howto-note"><span>⚡</span> Thruster energy refills on landings. Clean jumps beat reckless flips.</div>
+        <div class="howto-row"><span class="control-key">STAY LOW<br>HALF-FLIP</span><div><b>BEAMS & FAN RAILS</b><p>Stay low under overhead beams. Aim upside down to engage suction rails, then half-flip to land upright.</p></div></div>
+        <div class="howto-note"><span>⚡</span> Thruster energy refills on the ground. Clean jumps beat reckless flips.</div>
+        <button class="button button-primary" data-action="close-panel">GOT IT</button>
+      </section>
+
+      <section class="screen-panel modal-panel about-panel is-hidden" id="about-screen" aria-label="About THRUSTSHIFT">
+        <div class="panel-heading"><div><span class="panel-eyebrow">INDEPENDENT GAME PROJECT</span><h2>ABOUT THRUSTSHIFT</h2></div><button class="icon-button close-button" data-action="close-panel" aria-label="Close">×</button></div>
+        <p class="about-disclaimer">THRUSTSHIFT is an independent fan-made game inspired by the Tesla Roadster demonstration. It is not affiliated with, sponsored by, or endorsed by Tesla, Inc. or SpaceX. All trademarks belong to their respective owners.</p>
+        <div class="about-credits">
+          <p><b>ART</b> Original procedural car, wheel, thruster, sky, mountain, and star-field artwork.</p>
+          <p><b>AUDIO</b> Original synthesized music and sound effects; no third-party samples.</p>
+          <p><b>FONTS</b> Orbitron and Rajdhani, SIL Open Font License 1.1.</p>
+          <p><b>ENGINE</b> Phaser 3, MIT License.</p>
+        </div>
         <button class="button button-primary" data-action="close-panel">GOT IT</button>
       </section>
 
@@ -141,6 +157,7 @@ export class GameUI {
       mute: () => this.toggleMute(),
       leaderboard: () => { this.showLeaderboard(); },
       howto: () => this.openHowTo(),
+      about: () => this.openAbout(),
       'close-panel': () => { this.hideAllPanels(); this.show('menu-screen'); },
       nickname: () => this.openNickname(),
       'close-dialog': () => this.root.querySelector<HTMLDialogElement>('#nickname-dialog')?.close(),
@@ -190,6 +207,8 @@ export class GameUI {
 
   private async beginRun(): Promise<void> {
     this.playing = true;
+    this.fanRailMessageShown = false;
+    this.milestoneCount = 0;
     this.hideAllPanels();
     this.hide('menu-screen');
     this.hide('gameover-screen');
@@ -271,7 +290,7 @@ export class GameUI {
       '#result-flips': String(state.stats.totalFlips),
       '#result-best-trick': String(state.stats.bestTrick),
       '#result-combo': String(state.stats.maxCombo),
-      '#result-distance': `${Math.floor(state.stats.distance / 2.5)} M`,
+      '#result-distance': formatDistance(state.stats.distance * 10),
     };
     for (const [selector, value] of Object.entries(values)) {
       const element = this.root.querySelector(selector);
@@ -298,8 +317,8 @@ export class GameUI {
     this.text('#score-value', state.stats.score.toLocaleString('en-US').padStart(6, '0'));
     this.text('#combo-value', state.combo ? `COMBO ×${Math.min(8, 1 + state.combo * 0.5).toFixed(state.combo % 2 ? 1 : 0)}` : '');
     this.text('#energy-value', String(Math.round(state.energy)));
-    this.text('#speed-value', String(Math.round(state.speed * 0.78)));
-    this.text('#distance-value', `${Math.floor(state.stats.distance / 2.5)} M`);
+    this.text('#speed-value', String(Math.round(unitsPerSecondToMph(state.speed))));
+    this.text('#distance-value', formatDistance(state.stats.distance * 10));
     const fill = this.root.querySelector<HTMLElement>('#energy-fill');
     if (fill) {
       fill.style.width = `${state.energy}%`;
@@ -312,11 +331,23 @@ export class GameUI {
     }
     this.text('#fan-value', String(Math.round(state.fan)));
     this.root.querySelector('#fan-panel')?.classList.toggle('is-hidden', !state.fanRailVisible && !state.inverted);
+    if (state.fanRailVisible && !this.fanRailMessageShown) {
+      this.fanRailMessageShown = true;
+      this.addFeedback('FAN RAIL AHEAD — HALF-FLIP TO ENGAGE');
+    }
     this.updateTutorial(state);
   }
 
   showEvents(events: readonly { type: string; quality?: string; flips?: number }[]): void {
     for (const event of events) {
+      if (event.type === 'milestone') {
+        this.milestoneCount += 1;
+        if (this.milestoneCount % 3 === 0) {
+          const messages = ['MISSION CONTROL: FLIGHT PATH GREEN', 'TELEMETRY LOOKS GOOD, DRIVER', 'TRACKING A CLEAN BURN', 'BOOST WINDOW CONFIRMED'];
+          this.addFeedback(messages[(this.milestoneCount / 3 - 1) % messages.length] ?? messages[0]);
+        }
+        continue;
+      }
       const label = event.type === 'land'
         ? event.quality === 'perfect' ? 'PERFECT LANDING' : event.flips === 2 ? 'DOUBLE FLIP' : event.flips === 3 ? 'TRIPLE FLIP' : event.flips ? 'FRONT FLIP' : 'CLEAN LANDING'
         : event.type === 'nearMiss' ? 'NEAR MISS'
@@ -326,12 +357,16 @@ export class GameUI {
                 : event.type === 'thrusterBurst' ? 'THRUSTER BURST'
                   : event.type === 'crash' ? 'RUN ENDED' : '';
       if (!label) continue;
-      const item = document.createElement('div');
-      item.className = `feedback-item ${event.quality === 'perfect' ? 'feedback-perfect' : ''}`;
-      item.textContent = label;
-      this.root.querySelector('#feedback-stack')?.append(item);
-      window.setTimeout(() => item.remove(), 1550);
+      this.addFeedback(label, event.quality === 'perfect');
     }
+  }
+
+  private addFeedback(label: string, perfect = false): void {
+    const item = document.createElement('div');
+    item.className = `feedback-item ${perfect ? 'feedback-perfect' : ''}`;
+    item.textContent = label;
+    this.root.querySelector('#feedback-stack')?.append(item);
+    window.setTimeout(() => item.remove(), 1550);
   }
 
   private updateTutorial(state: SimulationState): void {
@@ -410,6 +445,11 @@ export class GameUI {
   private openHowTo(): void {
     this.hide('menu-screen');
     this.show('howto-screen');
+  }
+
+  private openAbout(): void {
+    this.hide('menu-screen');
+    this.show('about-screen');
   }
 
   private openNickname(): void {

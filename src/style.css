@@ -43,12 +43,10 @@ button { color: inherit; touch-action: manipulation; }
   background: linear-gradient(90deg, rgba(7, 8, 30, .83), rgba(7, 8, 30, .49) 37%, transparent 74%);
 }
 .menu-topline { position: absolute; top: max(24px, env(safe-area-inset-top)); left: clamp(28px, 6.3vw, 100px); right: clamp(28px, 6.3vw, 100px); display: flex; justify-content: space-between; align-items: center; }
-.edition, .brand-kicker, .panel-eyebrow, .hud-label, .menu-bottom, .meter-heading, .board-badge, .version-tag { font-family: "Orbitron", sans-serif; letter-spacing: .16em; }
-.edition { font-size: 10px; color: rgba(218, 225, 255, .7); }
-.brand-kicker { display: flex; align-items: center; gap: 11px; color: #aab4d8; font-size: clamp(8px, .9vw, 11px); animation: rise-in .7s both; }
-.brand-mark { width: 9px; height: 9px; background: var(--coral); transform: rotate(45deg); box-shadow: 0 0 13px rgba(255, 107, 74, .8); }
+.panel-eyebrow, .hud-label, .menu-bottom, .meter-heading, .board-badge { font-family: "Orbitron", sans-serif; letter-spacing: .16em; }
 .wordmark { font-family: "Orbitron", sans-serif; font-weight: 800; font-size: clamp(46px, 7.5vw, 116px); line-height: .97; letter-spacing: -.075em; margin: 17px 0 7px -7px; text-shadow: 0 0 32px rgba(46, 242, 255, .16); animation: rise-in .78s .06s both; }
 .wordmark span { display: block; background: linear-gradient(94deg, #efffff 1%, #8cf5ff 34%, #8d71ff 64%, #ff8c71 98%); -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 0 21px rgba(123, 44, 255, .32)); }
+.menu-subtitle { color: #aeb8d7; font: 8px "Orbitron", sans-serif; letter-spacing: .16em; margin: 5px 0 0; animation: rise-in .78s .1s both; }
 .tagline { color: var(--orange); font-family: "Orbitron", sans-serif; letter-spacing: .35em; font-size: clamp(10px, 1vw, 13px); margin: 14px 0 32px; text-shadow: 0 0 18px rgba(255, 179, 71, .4); animation: rise-in .78s .12s both; }
 .menu-actions { width: min(340px, 100%); animation: rise-in .8s .18s both; }
 .button { border: 0; min-height: 48px; cursor: pointer; transition: transform .18s ease, filter .18s ease, background .18s ease; }
@@ -65,8 +63,6 @@ button { color: inherit; touch-action: manipulation; }
 .edit-glyph { color: #8390b6; font: 8px "Orbitron", sans-serif; letter-spacing: .1em; margin-left: 8px; }
 .menu-bottom { position: absolute; bottom: max(22px, env(safe-area-inset-bottom)); left: clamp(28px, 6.3vw, 100px); right: clamp(28px, 6.3vw, 100px); display: flex; align-items: end; justify-content: space-between; gap: 20px; color: rgba(212, 219, 244, .48); font-size: 8px; line-height: 1.5; }
 .menu-bottom b { color: var(--orange); font-weight: 500; }
-.version-tag { color: var(--cyan); }
-
 .icon-button { display: grid; place-items: center; width: 42px; height: 42px; background: rgba(10, 12, 36, .58); border: 1px solid rgba(181, 197, 243, .24); color: #d5faff; cursor: pointer; font: 21px "Rajdhani", sans-serif; backdrop-filter: blur(8px); }
 .icon-button:hover { border-color: var(--cyan); color: var(--cyan); }
 .icon-button.is-muted { color: #8490b3; }
@@ -140,6 +136,11 @@ button { color: inherit; touch-action: manipulation; }
 .howto-row p { color: #aeb8d7; font-size: 14px; margin: 5px 0 0; line-height: 1.25; }
 .howto-note { display: flex; gap: 9px; align-items: center; padding: 12px; color: #f2d4a0; background: rgba(255, 179, 71, .07); font-size: 13px; }
 .howto-note span { color: var(--orange); font-size: 18px; }
+.about-panel { text-align: left; }
+.about-disclaimer { color: #d0d8f0 !important; line-height: 1.45; margin-bottom: 18px !important; }
+.about-credits { border-top: 1px solid rgba(164, 179, 221, .16); }
+.about-credits p { color: #aeb8d7; font-size: 14px; line-height: 1.4; margin: 12px 0; }
+.about-credits b { display: inline-block; min-width: 58px; color: var(--cyan); font: 8px "Orbitron", sans-serif; letter-spacing: .1em; }
 
 .nickname-dialog { width: min(440px, calc(100vw - 32px)); padding: 32px; color: white; background: #111133; border: 1px solid rgba(46, 242, 255, .35); box-shadow: 0 20px 90px rgba(0,0,0,.7); }
 .nickname-dialog::backdrop { background: rgba(4, 4, 20, .78); backdrop-filter: blur(8px); }
@@ -167,9 +168,8 @@ button { color: inherit; touch-action: manipulation; }
 }
 
 @media (max-width: 560px) {
-  .edition { font-size: 7px; }
   .menu-topline { top: max(15px, env(safe-area-inset-top)); }
-  .brand-kicker { font-size: 7px; }
+  .menu-subtitle { font-size: 7px; letter-spacing: .11em; }
   .tagline { margin-bottom: 22px; }
   .menu-bottom { font-size: 6px; }
   .hud { padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(17px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }

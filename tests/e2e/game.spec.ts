@@ -35,6 +35,7 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
   await page.screenshot({ path: join(screens, 'desktop-menu.png'), fullPage: true });
 
   await startRun(page);
+  await expect(page.locator('.speed-panel span')).toHaveText('MPH');
   const canvas = page.locator('#game-canvas canvas');
   await expect(canvas).toBeVisible();
   await page.keyboard.down('Space');
@@ -71,13 +72,19 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
 
   await page.locator('#leaderboard-screen [data-action="close-panel"]').click();
   await startRun(page);
+  await expect(page.locator('#score-value')).not.toHaveText('000000', { timeout: 5_000 });
+  await page.keyboard.down('Space');
+  await page.waitForFunction(() => {
+    const game = (window as Window & { __thrust?: { activeRun: boolean; held: boolean } }).__thrust;
+    return game?.activeRun && game.held;
+  });
   await page.locator('#hud [data-action="pause"]').click();
   await expect(page.locator('#pause-screen')).toBeVisible();
-  await page.locator('#pause-screen [data-action="resume"]').click();
-  await expect(page.locator('#pause-screen')).toBeHidden();
-  await page.locator('#hud [data-action="pause"]').click();
   await page.locator('#pause-screen [data-action="restart"]').click();
   await waitForActiveRun(page);
+  await expect(page.locator('#score-value')).toHaveText('000000');
+  await expect.poll(() => page.evaluate(() => (window as Window & { __thrust?: { held: boolean } }).__thrust?.held)).toBe(false);
+  await page.keyboard.up('Space');
 
   await page.locator('#hud [data-action="mute"]').click();
   await expect.poll(() => page.evaluate(() => localStorage.getItem('thrustshift.muted'))).toBe('true');
@@ -86,6 +93,55 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
   await expect(page.locator('#menu-screen [data-action="mute"]')).toHaveClass(/is-muted/);
   expect(failedAssets).toEqual([]);
   expect(consoleErrors).toEqual([]);
+});
+
+test('pausing after an airborne burst stops effects and resumes a single loop', async ({ page }) => {
+  await page.goto('/');
+  await startRun(page);
+
+  await page.keyboard.down('Space');
+  await page.waitForFunction(() => {
+    const game = (window as Window & { __thrust?: { activeRun: boolean; state: { grounded: boolean } } }).__thrust;
+    return game?.activeRun && !game.state.grounded;
+  });
+  await page.keyboard.up('Space');
+  await page.waitForFunction(() => {
+    const game = (window as Window & { __thrust?: { held: boolean; state: { grounded: boolean } } }).__thrust;
+    return game && !game.held && !game.state.grounded;
+  });
+  await page.keyboard.down('Space');
+  await page.waitForFunction(() => {
+    const game = (window as Window & { __thrust?: { state: { burstsLeft: number } } }).__thrust;
+    return game?.state.burstsLeft === 1;
+  });
+  await page.keyboard.up('Space');
+
+  await page.locator('#hud [data-action="pause"]').click();
+  await expect(page.locator('#pause-screen')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
+    return audio?.playing().filter((key) => ['engine', 'wind', 'rocket'].includes(key)) ?? [];
+  })).toEqual([]);
+
+  await page.locator('#pause-screen [data-action="resume"]').click();
+  await expect.poll(() => page.evaluate(() => {
+    const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
+    return audio?.playing().filter((key) => key === 'engine' || key === 'wind') ?? [];
+  })).toEqual(['wind']);
+  expect(await page.evaluate(() => {
+    const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
+    return audio?.playing().filter((key) => key === 'engine' || key === 'wind').length;
+  })).toBe(1);
+});
+
+test('About panel opens and closes with the full disclaimer', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('#menu-screen [data-action="about"]').click();
+  await expect(page.locator('#about-screen')).toBeVisible();
+  await expect(page.locator('#about-screen')).toContainText('All trademarks belong to their respective owners.');
+  await page.locator('#about-screen [data-action="close-panel"]').first().click();
+  await expect(page.locator('#about-screen')).toBeHidden();
+  await expect(page.locator('#menu-screen')).toBeVisible();
 });
 
 test('iPhone-sized portrait and landscape touch play do not scroll the page', async ({ browser }) => {
