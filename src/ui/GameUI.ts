@@ -75,7 +75,7 @@ export class GameUI {
         <p class="tagline">FLIP. FLY. SURVIVE.</p>
         <div class="menu-actions">
           <button class="button button-primary" data-action="play"><span class="button-icon">▶</span> START ENGINE</button>
-          <div class="secondary-actions"><button class="button button-ghost" data-action="leaderboard">LEADERBOARD</button><button class="button button-ghost" data-action="howto">HOW TO PLAY</button><button class="button button-ghost" data-action="about">ABOUT</button></div>
+          <div class="secondary-actions"><button class="button button-ghost" data-action="leaderboard">LEADERBOARD</button><button class="button button-ghost" data-action="howto">HOW TO PLAY</button><button class="button button-ghost" data-action="about">ABOUT</button><button class="button button-ghost paint-button" data-action="paint">PAINT · PROTOTYPE</button></div>
         </div>
         <button class="nickname-chip" data-action="nickname"><span class="online-dot"></span><span class="nickname-label"></span><span class="edit-glyph">EDIT ↗</span></button>
         <div class="menu-bottom"><span>UNOFFICIAL FAN-MADE GAME. NOT AFFILIATED WITH TESLA OR SPACEX.</span><span>BEST <b class="menu-best">000000</b></span></div>
@@ -164,6 +164,11 @@ export class GameUI {
       share: () => { void this.shareScore(); },
       'period-all': () => { this.period = 'all'; void this.loadLeaderboard(); },
       'period-week': () => { this.period = 'week'; void this.loadLeaderboard(); },
+      paint: () => {
+        storageSet('thrustshift.paint', storageGet('thrustshift.paint', 'prototype') === 'coral' ? 'prototype' : 'coral');
+        this.updatePaintButton();
+        this.game.events.emit('paint-change');
+      },
     };
 
     root.addEventListener('pointerdown', (event) => {
@@ -201,8 +206,15 @@ export class GameUI {
     this.updateNicknameLabels();
     this.updateMuteButtons();
     this.updateBestLabels();
+    this.updatePaintButton();
     if (storageGet(KEYS.tutorial) !== 'seen') this.root.dataset.tutorial = 'new';
     document.addEventListener('visibilitychange', this.onVisibilityChange);
+  }
+
+  private updatePaintButton(): void {
+    const coral = storageGet('thrustshift.paint', 'prototype') === 'coral';
+    const button = this.root.querySelector<HTMLButtonElement>('[data-action="paint"]');
+    if (button) button.textContent = coral ? 'PAINT · CORAL' : 'PAINT · PROTOTYPE';
   }
 
   private async beginRun(): Promise<void> {

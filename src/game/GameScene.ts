@@ -1,12 +1,16 @@
 import Phaser from 'phaser';
 import { CAR_HEIGHT, FIXED_DT, WHEEL_RADIUS, WHEELBASE } from '../sim/constants';
-import { BASE_Y, type CourseSegment, type Hazard } from '../sim/course';
+import { BASE_Y, pistonHeight, type CeilingSegment, type CourseSegment, type Hazard } from '../sim/course';
 import { encodeInputLog } from '../sim/replay';
 import { Simulation, WHEEL_VERTICAL_OFFSET } from '../sim/simulation';
 import type { SimEvent } from '../sim/simulation';
 import { CAR_ART } from './art/carArt';
 import { CAR_TEXTURE_SCALE, registerArt } from './art/registerArt';
 import { BIOMES, blendBiome } from './biomes';
+
+function readPaint(): string {
+  try { return localStorage.getItem('thrustshift.paint') ?? 'prototype'; } catch { return 'prototype'; }
+}
 
 export interface RunFinished {
   state: Simulation['state'];
@@ -143,6 +147,7 @@ export class GameScene extends Phaser.Scene {
     this.game.events.on('run-resume', this.resumeRun, this);
     this.game.events.on('run-quit', this.quitRun, this);
     this.game.events.on('run-restart', this.startRun, this);
+    this.game.events.on('paint-change', () => this.carBody.setTexture(readPaint() === 'coral' ? 'car-body-coral' : 'car-body'));
 
     this.input.keyboard?.on('keydown-SPACE', this.pressKeyboard, this);
     this.input.keyboard?.on('keyup-SPACE', this.releaseKeyboard, this);
@@ -234,6 +239,7 @@ export class GameScene extends Phaser.Scene {
     this.crashTimer = 0;
     this.car.setVisible(true).setAlpha(1);
     this.carBody.clearTint();
+    this.carBody.setTexture(readPaint() === 'coral' ? 'car-body-coral' : 'car-body');
   }
 
   private pauseRun(): void {
@@ -323,6 +329,22 @@ export class GameScene extends Phaser.Scene {
         }
         case 'nearMiss':
           this.exhaust.explode(14, state.x, state.y);
+          break;
+        case 'thrusterBurst':
+          this.flameTimer = Math.max(this.flameTimer, 0.22);
+          this.exhaust.explode(18, rear.x, rear.y - CAR_HEIGHT / 2);
+          cam.shake(70, 0.0018);
+          break;
+        case 'suctionEngage':
+          this.sparks.explode(22, state.x, state.y - CAR_HEIGHT / 2);
+          cam.shake(120, 0.004);
+          break;
+        case 'suctionRelease':
+          this.exhaust.explode(12, state.x, state.y);
+          break;
+        case 'hardLanding':
+          cam.shake(220, 0.008);
+          this.dust.explode(14, (rear.x + front.x) / 2, (rear.y + front.y) / 2);
           break;
         case 'crash':
           this.sparks.explode(70, state.x, state.y);
@@ -446,7 +468,7 @@ export class GameScene extends Phaser.Scene {
         continue;
       }
       const isLaunch = seg.kind === 'launch';
-      const isKicker = seg.kind === 'kicker';
+      const isKicker = seg.kind === 'kicker' || seg.kind === 'quarter';
       const color = isLaunch ? 0xff6b4a : isKicker ? accent : edge;
       fx.lineStyle(9, color, 0.18);
       fx.lineBetween(seg.x0, seg.y0, seg.x1, seg.y1);
@@ -454,8 +476,58 @@ export class GameScene extends Phaser.Scene {
       fx.lineBetween(seg.x0, seg.y0, seg.x1, seg.y1);
       if (isLaunch || isKicker) this.drawRampDetail(seg, isLaunch, elapsed);
     }
+    for (const ceiling of course.ceilingsInRange(left - 200, right)) this.drawFanRail(ceiling, top, elapsed);
     for (const hazard of course.hazardsAhead(left - 200, right - left + 200)) {
       if (hazard.kind !== 'gap') this.drawObstacle(hazard, elapsed);
+    }
+  }
+
+  private drawFanRail(c: CeilingSegment, top: number, elapsed: number): void {
+    const g = this.track;
+    const fx = this.fx;
+    const state = this.simulation.state;
+    const engaged = state.inverted && state.x >= c.x0 && state.x <= c.x1;
+    const slabTop = c.y - 34;
+    const skyTop = Math.min(top - 50, slabTop - 40);
+    for (let px = c.x0 + 40; px < c.x1; px += 260) {
+      g.fillStyle(0x0c0a24, 1);
+      g.fillRect(px - 5, skyTop, 10, slabTop - skyTop);
+      g.lineStyle(1.5, 0x7b2cff, 0.4);
+      for (let y = slabTop; y > skyTop; y -= 28) g.lineBetween(px - 5, y, px + 5, y - 28);
+    }
+    g.fillStyle(0x120c30, 1);
+    g.fillRect(c.x0, slabTop, c.x1 - c.x0, 34);
+    g.fillStyle(0x1d1446, 1);
+    g.fillRect(c.x0, slabTop, c.x1 - c.x0, 6);
+    const spin = elapsed * (engaged ? 22 : 7);
+    for (let vx = c.x0 + 30; vx < c.x1 - 20; vx += 70) {
+      const cy = slabTop + 18;
+      g.fillStyle(0x05040f, 1);
+      g.fillCircle(vx, cy, 11);
+      fx.lineStyle(1.5, 0x2ef2ff, engaged ? 0.9 : 0.45);
+      fx.strokeCircle(vx, cy, 11);
+      for (let b = 0; b < 3; b += 1) {
+        const a = spin + (b * Math.PI * 2) / 3;
+        fx.lineBetween(vx, cy, vx + Math.cos(a) * 9, cy + Math.sin(a) * 9);
+      }
+    }
+    const glow = engaged ? 0.95 : 0.6 + 0.25 * Math.sin(elapsed * 6);
+    fx.lineStyle(12, 0x2ef2ff, engaged ? 0.3 : 0.12);
+    fx.lineBetween(c.x0, c.y, c.x1, c.y);
+    fx.lineStyle(3, 0x2ef2ff, glow);
+    fx.lineBetween(c.x0, c.y, c.x1, c.y);
+    for (const ex of [c.x0, c.x1]) {
+      fx.fillStyle(0xffb347, 0.9);
+      fx.fillRect(ex - 3, slabTop, 6, 34);
+    }
+    if (engaged) {
+      const [cx, cy] = [state.x, state.y];
+      for (let i = 0; i < 6; i += 1) {
+        const u = ((elapsed * 3 + i / 6) % 1);
+        const lx = cx - 70 + i * 28;
+        fx.lineStyle(2, 0x9ffbff, 0.6 * (1 - u));
+        fx.lineBetween(lx, c.y + 4 + (cy - c.y) * (1 - u), lx, c.y + 4 + (cy - c.y) * (1 - u) - 10);
+      }
     }
   }
 
@@ -521,8 +593,46 @@ export class GameScene extends Phaser.Scene {
   private drawObstacle(h: Hazard, elapsed: number): void {
     const g = this.track;
     const fx = this.fx;
-    const topY = h.baseY - h.height;
-    if (h.kind === 'barrier') {
+    const topY = h.baseY - (h.kind === 'piston' ? pistonHeight(h, this.simulation.state.elapsed) : h.height);
+    if (h.kind === 'beam') {
+      const blink = 0.55 + 0.45 * Math.sin(elapsed * 8 + h.x);
+      g.fillStyle(0x0c0a24, 1);
+      g.fillRect(h.x + 8, topY - 420, 8, 420);
+      g.fillRect(h.x + h.width - 16, topY - 420, 8, 420);
+      g.fillStyle(0x1a0b24, 1);
+      g.fillRect(h.x, topY, h.width, h.height);
+      for (let sx = 0; sx < h.width; sx += 24) {
+        g.fillStyle(0xffb347, 0.9);
+        g.fillPoints([{ x: h.x + sx, y: h.baseY - 4 }, { x: h.x + sx + 12, y: topY + 4 }, { x: h.x + sx + 20, y: topY + 4 }, { x: h.x + sx + 8, y: h.baseY - 4 }], true);
+      }
+      fx.lineStyle(3, 0xff6b4a, 0.95);
+      fx.lineBetween(h.x - 2, h.baseY, h.x + h.width + 2, h.baseY);
+      fx.lineStyle(10, 0xff6b4a, 0.18);
+      fx.lineBetween(h.x - 2, h.baseY, h.x + h.width + 2, h.baseY);
+      fx.fillStyle(0xff3b5c, blink);
+      fx.fillCircle(h.x, h.baseY + 2, 4);
+      fx.fillCircle(h.x + h.width, h.baseY + 2, 4);
+      const floorY = this.simulation.course.surfaceAt(h.x + h.width / 2)?.y;
+      if (floorY !== undefined) {
+        fx.lineStyle(2, 0xffb347, 0.5);
+        for (let sx = -60; sx < h.width + 60; sx += 18) fx.lineBetween(h.x + sx, floorY - 2, h.x + sx + 9, floorY - 2);
+      }
+    } else if (h.kind === 'piston') {
+      const cx = h.x + h.width / 2;
+      g.fillStyle(0x0c0a24, 1);
+      g.fillRect(h.x - 6, h.baseY - 10, h.width + 12, 10);
+      const rodGrad = 0x3a3e5a;
+      g.fillStyle(rodGrad, 1);
+      g.fillRect(cx - 5, topY + 12, 10, Math.max(0, h.baseY - 10 - topY - 12));
+      g.fillStyle(0x1a0b24, 1);
+      g.fillRect(h.x, topY, h.width, 14);
+      g.fillStyle(0xff6b4a, 0.9);
+      g.fillRect(h.x + 3, topY + 4, h.width - 6, 4);
+      fx.lineStyle(3, 0xffb347, 0.95);
+      fx.lineBetween(h.x - 2, topY, h.x + h.width + 2, topY);
+      fx.lineStyle(10, 0xff6b4a, 0.16);
+      fx.lineBetween(h.x - 2, topY, h.x + h.width + 2, topY);
+    } else if (h.kind === 'barrier') {
       g.fillStyle(0x1a0b24, 1);
       g.fillRect(h.x, topY, h.width, h.height);
       const stripe = 12;

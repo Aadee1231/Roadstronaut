@@ -55,8 +55,8 @@ button { color: inherit; touch-action: manipulation; }
 .button-primary { position: relative; width: 100%; color: #09091d; background: linear-gradient(110deg, #5ff5fa, #b8faff 52%, #62eff5); clip-path: polygon(0 0, 97% 0, 100% 21%, 100% 100%, 3% 100%, 0 79%); font-family: "Orbitron", sans-serif; font-weight: 800; letter-spacing: .13em; font-size: 14px; box-shadow: 0 0 24px rgba(46, 242, 255, .27); }
 .button-primary:hover { box-shadow: 0 0 34px rgba(46, 242, 255, .5); }
 .button-icon { margin-right: 11px; font-size: 11px; }
-.secondary-actions { display: flex; gap: 8px; margin-top: 10px; }
-.button-ghost { flex: 1; color: #e1e7ff; background: rgba(17, 18, 49, .62); border: 1px solid rgba(164, 179, 231, .19); font-family: "Orbitron", sans-serif; font-size: 9px; letter-spacing: .1em; padding: 0 13px; }
+.secondary-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.button-ghost { flex: 1 1 auto; white-space: nowrap; color: #e1e7ff; background: rgba(17, 18, 49, .62); border: 1px solid rgba(164, 179, 231, .19); font-family: "Orbitron", sans-serif; font-size: 9px; letter-spacing: .1em; padding: 0 13px; }
 .button-ghost:hover { border-color: rgba(46, 242, 255, .6); background: rgba(31, 33, 75, .82); }
 .nickname-chip { display: flex; align-items: center; gap: 9px; margin-top: 26px; border: 1px solid rgba(168, 186, 229, .2); background: rgba(8, 10, 34, .54); color: #e1e6f9; padding: 9px 12px; cursor: pointer; font-size: 14px; letter-spacing: .04em; }
 .online-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
