@@ -701,7 +701,32 @@ describe('procedural gameplay fairness', () => {
     }
   });
 
-  it('keeps 2,000 deterministic input policies alive and aligned through rail zones', () => {
+  type AirborneStart = 'ground-jump' | 'quarter-lip' | 'ceiling-bounce' | 'rail-release' | 'other';
+  type HardSnapCase = {
+    seed: number;
+    policy: number;
+    x: number;
+    angle: number;
+    target: number;
+    contactSlope: number;
+    error: number;
+    airborneStart: AirborneStart;
+  };
+  type RailFuzzChunkResult = {
+    runs: number;
+    runsWithRecovery: number;
+    recoveryTriggers: number;
+    hardSnaps: number;
+    landingContacts: number;
+    minimumMargin: number;
+    recoveryTouchdowns: number;
+    maximumPreSnapRecoveryError: number;
+    hardSnapBreakdown: Record<AirborneStart, number>;
+    hardSnapCases: HardSnapCase[];
+  };
+  const railFuzzChunks: RailFuzzChunkResult[] = [];
+
+  const runRailRecoveryFuzzChunk = (chunk: number) => {
     let runs = 0;
     let runsWithRecovery = 0;
     let recoveryTriggers = 0;
@@ -710,7 +735,6 @@ describe('procedural gameplay fairness', () => {
     let minimumMargin = Infinity;
     let recoveryTouchdowns = 0;
     let maximumPreSnapRecoveryError = 0;
-    type AirborneStart = 'ground-jump' | 'quarter-lip' | 'ceiling-bounce' | 'rail-release' | 'other';
     const hardSnapBreakdown: Record<AirborneStart, number> = {
       'ground-jump': 0,
       'quarter-lip': 0,
@@ -718,18 +742,9 @@ describe('procedural gameplay fairness', () => {
       'rail-release': 0,
       other: 0,
     };
-    const hardSnapCases: Array<{
-      seed: number;
-      policy: number;
-      x: number;
-      angle: number;
-      target: number;
-      contactSlope: number;
-      error: number;
-      airborneStart: AirborneStart;
-    }> = [];
+    const hardSnapCases: HardSnapCase[] = [];
 
-    for (let seed = 0; seed < 100; seed += 1) {
+    for (let seed = chunk * 10; seed < (chunk + 1) * 10; seed += 1) {
       const template = new Simulation(seed);
       const ceiling = template.course.ceilingsInRange(0, distanceAtTime(90))[0];
       expect(ceiling, `seed ${seed} has a suction section`).toBeDefined();
@@ -940,25 +955,83 @@ describe('procedural gameplay fairness', () => {
       }
     }
 
+    railFuzzChunks[chunk] = {
+      runs,
+      runsWithRecovery,
+      recoveryTriggers,
+      hardSnaps,
+      landingContacts,
+      minimumMargin,
+      recoveryTouchdowns,
+      maximumPreSnapRecoveryError,
+      hardSnapBreakdown,
+      hardSnapCases,
+    };
+  };
+
+  it.each(Array.from({ length: 10 }, (_, chunk) => chunk))(
+    'keeps deterministic input policies alive through rail zones (seed chunk %i)',
+    runRailRecoveryFuzzChunk,
+    120_000,
+  );
+
+  it('keeps aggregate rail-recovery fuzz within the hard-snap gate', () => {
+    const totals: RailFuzzChunkResult = {
+      runs: 0,
+      runsWithRecovery: 0,
+      recoveryTriggers: 0,
+      hardSnaps: 0,
+      landingContacts: 0,
+      minimumMargin: Infinity,
+      recoveryTouchdowns: 0,
+      maximumPreSnapRecoveryError: 0,
+      hardSnapBreakdown: {
+        'ground-jump': 0,
+        'quarter-lip': 0,
+        'ceiling-bounce': 0,
+        'rail-release': 0,
+        other: 0,
+      },
+      hardSnapCases: [],
+    };
+    for (const chunk of railFuzzChunks) {
+      totals.runs += chunk.runs;
+      totals.runsWithRecovery += chunk.runsWithRecovery;
+      totals.recoveryTriggers += chunk.recoveryTriggers;
+      totals.hardSnaps += chunk.hardSnaps;
+      totals.landingContacts += chunk.landingContacts;
+      totals.minimumMargin = Math.min(totals.minimumMargin, chunk.minimumMargin);
+      totals.recoveryTouchdowns += chunk.recoveryTouchdowns;
+      totals.maximumPreSnapRecoveryError = Math.max(
+        totals.maximumPreSnapRecoveryError,
+        chunk.maximumPreSnapRecoveryError,
+      );
+      for (const phase of Object.keys(totals.hardSnapBreakdown) as AirborneStart[]) {
+        totals.hardSnapBreakdown[phase] += chunk.hardSnapBreakdown[phase];
+      }
+      totals.hardSnapCases.push(...chunk.hardSnapCases);
+    }
     console.info(
-      `rail-recovery fuzz: ${runs} runs, ${runsWithRecovery} triggered recovery `
-      + `(${recoveryTriggers} predictor triggers), `
-      + `${hardSnaps} hard snaps, `
-      + `hard snaps by phase ${JSON.stringify(hardSnapBreakdown)}, `
-      + `${landingContacts} rail contacts, minimum angle margin ${(minimumMargin * 180 / Math.PI).toFixed(3)}°, `
-      + `${recoveryTouchdowns} recovery touchdowns, max pre-snap error `
-      + `${(maximumPreSnapRecoveryError * 180 / Math.PI).toFixed(3)}°`,
+      `rail-recovery fuzz: ${totals.runs} runs, ${totals.runsWithRecovery} triggered recovery `
+      + `(${totals.recoveryTriggers} predictor triggers), `
+      + `${totals.hardSnaps} hard snaps, `
+      + `hard snaps by phase ${JSON.stringify(totals.hardSnapBreakdown)}, `
+      + `${totals.landingContacts} rail contacts, `
+      + `minimum angle margin ${(totals.minimumMargin * 180 / Math.PI).toFixed(3)}°, `
+      + `${totals.recoveryTouchdowns} recovery touchdowns, max pre-snap error `
+      + `${(totals.maximumPreSnapRecoveryError * 180 / Math.PI).toFixed(3)}°`,
     );
-    expect(runs).toBe(2_000);
-    expect(landingContacts).toBeGreaterThan(0);
-    const topHardSnaps = hardSnapCases
+    expect(railFuzzChunks).toHaveLength(10);
+    expect(totals.runs).toBe(2_000);
+    expect(totals.landingContacts).toBeGreaterThan(0);
+    const topHardSnaps = totals.hardSnapCases
       .sort((a, b) => b.error - a.error)
       .slice(0, 5);
     expect(
-      hardSnaps,
-      `hard snaps exceeded 5% of recovery touchdowns; breakdown=${JSON.stringify(hardSnapBreakdown)}; `
+      totals.hardSnaps,
+      `hard snaps exceeded 5% of recovery touchdowns; breakdown=${JSON.stringify(totals.hardSnapBreakdown)}; `
       + `top cases: ${JSON.stringify(topHardSnaps)}`,
-    ).toBeLessThanOrEqual(recoveryTouchdowns * 0.05);
+    ).toBeLessThanOrEqual(totals.recoveryTouchdowns * 0.05);
   }, 120_000);
 
   it('auto-recovers a held, misaligned rail miss with an unrewarded touchdown and cloned state', () => {
