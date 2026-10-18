@@ -1,9 +1,11 @@
 import {
-  AIRBORNE_FALL_LIMIT, CAR_HEIGHT, CAR_LENGTH, ENERGY_GROUNDED_REGEN, ENERGY_MAX,
-  FIXED_DT, GAP_FALL_LIMIT, GREAT_LIMIT, GRAVITY, JUMP_VELOCITY, LANDING_LIMIT, LAUNCH_BOOST,
-  MIN_REWARD_AIRTIME, SNAP_TOLERANCE,
-  MAX_ANGULAR_SPEED, MAX_RUN_SECONDS, NEAR_MISS_CLEARANCE, PERFECT_LIMIT,
-  ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND, START_SPEED, SUPER_JUMP_VELOCITY,
+  AIRBORNE_FALL_LIMIT, BURST_COOLDOWN, BURST_COUNT_PER_AIR_PHASE, BURST_ENERGY,
+  BURST_LIFT_LIMIT, BURST_LIFT_VELOCITY, BURST_ROTATION_KICK, CAR_HEIGHT, CAR_LENGTH,
+  CRASH_IMPACT, ENERGY_GROUNDED_REGEN, ENERGY_MAX, FIXED_DT, GAP_FALL_LIMIT, GREAT_LIMIT,
+  GRAVITY, HARD_IMPACT, JUMP_VELOCITY, LANDING_LIMIT, LAUNCH_BOOST, LAUNCH_WINDOW_FRACTION,
+  MIN_AUTO_TAKEOFF_VELOCITY, MIN_REWARD_AIRTIME, MAX_ANGULAR_SPEED, MAX_RUN_SECONDS,
+  NEAR_MISS_CLEARANCE, PERFECT_LIMIT, ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND,
+  SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
 } from './constants';
 import { BASE_Y, createCourse, type Course, type Surface } from './course';
@@ -16,6 +18,8 @@ export type SimEvent =
   | { type: 'flipComplete'; count: number }
   | { type: 'land'; quality: LandingQuality; flips: number; airtime: number; points: number }
   | { type: 'touchdown' }
+  | { type: 'hardLanding' }
+  | { type: 'thrusterBurst' }
   | { type: 'nearMiss'; hazardId: string }
   | { type: 'crash'; reason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' };
 
@@ -28,6 +32,8 @@ export interface SimulationState {
   angularVelocity: number;
   speed: number;
   energy: number;
+  burstsLeft: number;
+  burstCooldown: number;
   grounded: boolean;
   rotating: boolean;
   crashed: boolean;
@@ -83,6 +89,8 @@ export class Simulation {
       angularVelocity: 0,
       speed: START_SPEED,
       energy: ENERGY_MAX,
+      burstsLeft: BURST_COUNT_PER_AIR_PHASE,
+      burstCooldown: 0,
       grounded: true,
       rotating: false,
       crashed: false,
@@ -112,6 +120,7 @@ export class Simulation {
       this.wheelBottomAt(WHEELBASE / 2),
       this.wheelBottomAt(-WHEELBASE / 2),
     ];
+    state.burstCooldown = max(0, state.burstCooldown - dt);
     state.elapsed += dt;
     state.speed = speedAtTime(state.elapsed);
     state.vx = state.speed;
@@ -137,13 +146,15 @@ export class Simulation {
       if (surface) this.syncGroundPose(surface);
       if (newPress && surface) {
         const launchWindow = surface.segment.kind === 'launch'
-          && state.x >= surface.segment.x1 - (surface.segment.x1 - surface.segment.x0) * 0.25;
+          && state.x >= surface.segment.x1 - (surface.segment.x1 - surface.segment.x0) * LAUNCH_WINDOW_FRACTION;
         state.grounded = false;
         state.airtime = 0;
         state.flips = 0;
         this.flipRotation = 0;
         this.airbornePressEligible = false;
         this.rewardedLandingThisAirbornePhase = false;
+        state.burstsLeft = BURST_COUNT_PER_AIR_PHASE;
+        state.burstCooldown = 0;
         if (launchWindow) {
           state.vy = state.speed * sin(surface.slope) + SUPER_JUMP_VELOCITY + LAUNCH_BOOST;
           this.events.push({ type: 'superLaunch' });
@@ -164,13 +175,24 @@ export class Simulation {
       ) {
         const launch = previousSurface.segment.kind === 'launch';
         const takeoffVelocity = state.speed * sin(previousSurface.slope) + (launch ? LAUNCH_BOOST : 0);
-        if (takeoffVelocity < -150) {
+        if (takeoffVelocity < MIN_AUTO_TAKEOFF_VELOCITY) {
           this.leaveGround();
           state.vy = takeoffVelocity;
         }
       }
     } else {
-      if (newPress) this.airbornePressEligible = true;
+      if (newPress) {
+        this.airbornePressEligible = true;
+        if (state.burstsLeft > 0 && state.burstCooldown === 0 && state.energy >= BURST_ENERGY) {
+          state.energy -= BURST_ENERGY;
+          state.burstsLeft -= 1;
+          state.burstCooldown = BURST_COOLDOWN;
+          if (state.vy > BURST_LIFT_LIMIT) state.vy += BURST_LIFT_VELOCITY;
+          state.angularVelocity = min(MAX_ANGULAR_SPEED, state.angularVelocity + BURST_ROTATION_KICK);
+          this.events.push({ type: 'thrusterBurst' });
+          if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
+        }
+      }
       state.airtime += dt;
       state.vy += GRAVITY * dt;
       state.y += state.vy * dt;
@@ -264,6 +286,8 @@ export class Simulation {
     this.flipRotation = 0;
     this.airbornePressEligible = false;
     this.rewardedLandingThisAirbornePhase = false;
+    state.burstsLeft = BURST_COUNT_PER_AIR_PHASE;
+    state.burstCooldown = 0;
     this.events.push({ type: 'takeoff' });
   }
 
@@ -309,6 +333,11 @@ export class Simulation {
       this.crash('bad-landing');
       return;
     }
+    const impactSpeed = Math.abs(-state.vx * sin(surface.slope) + state.vy * cos(surface.slope));
+    if (impactSpeed > CRASH_IMPACT) {
+      this.crash('bad-landing');
+      return;
+    }
 
     state.grounded = true;
     state.y = surface.y - contact.yOffset - WHEEL_RADIUS;
@@ -320,7 +349,11 @@ export class Simulation {
       return;
     }
     this.rewardedLandingThisAirbornePhase = true;
-    const quality: LandingQuality = difference <= PERFECT_LIMIT ? 'perfect' : difference <= GREAT_LIMIT ? 'great' : 'clean';
+    const rawQuality: LandingQuality = difference <= PERFECT_LIMIT ? 'perfect' : difference <= GREAT_LIMIT ? 'great' : 'clean';
+    const quality = impactSpeed > HARD_IMPACT
+      ? rawQuality === 'perfect' ? 'great' : rawQuality === 'great' ? 'clean' : 'clean'
+      : rawQuality;
+    if (impactSpeed > HARD_IMPACT) this.events.push({ type: 'hardLanding' });
     const oldCombo = state.combo;
     if (state.flips > 0 || quality === 'perfect') {
       state.combo += 1;

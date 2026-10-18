@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { GRAVITY, JUMP_VELOCITY, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, WHEEL_RADIUS, distanceAtTime, speedAtTime, timeAtDistance } from '../../src/sim/constants';
+import {
+  BURST_COOLDOWN, BURST_COUNT_PER_AIR_PHASE, CRASH_IMPACT, GRAVITY, HARD_IMPACT,
+  JUMP_VELOCITY, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, WHEEL_RADIUS,
+  distanceAtTime, speedAtTime, timeAtDistance,
+} from '../../src/sim/constants';
 import { atan2, cos, normalizeAngle, sin } from '../../src/sim/detmath';
 import { decodeInputLog, encodeInputLog, replayRun } from '../../src/sim/replay';
 import { Simulation, WHEEL_VERTICAL_OFFSET } from '../../src/sim/simulation';
@@ -51,6 +55,7 @@ describe('simulation input and replay', () => {
     const simulation = new Simulation(4);
     simulation.step(true);
     expect(simulation.events.some((event) => event.type === 'jump')).toBe(true);
+    expect(simulation.events.some((event) => event.type === 'thrusterBurst')).toBe(false);
     expect(simulation.state.angularVelocity).toBe(0);
     expect(simulation.state.rotating).toBe(false);
     const energy = simulation.state.energy;
@@ -59,6 +64,8 @@ describe('simulation input and replay', () => {
     expect(simulation.state.angularVelocity).toBeGreaterThan(0);
     expect(simulation.state.energy).toBeLessThan(energy);
     expect(simulation.state.rotating).toBe(true);
+    expect(simulation.events.some((event) => event.type === 'thrusterBurst')).toBe(true);
+    expect(simulation.state.burstsLeft).toBe(BURST_COUNT_PER_AIR_PHASE - 1);
   });
 
   it('does not rotate when a jump press is held through takeoff', () => {
@@ -66,6 +73,8 @@ describe('simulation input and replay', () => {
     simulation.step(true);
     for (let i = 0; i < 12; i += 1) simulation.step(true);
     expect(simulation.state.angularVelocity).toBe(0);
+    expect(simulation.state.burstsLeft).toBe(BURST_COUNT_PER_AIR_PHASE);
+    expect(simulation.events.some((event) => event.type === 'thrusterBurst')).toBe(false);
   });
 
   it('keeps a plain flat jump within the airtime and apex targets', () => {
@@ -106,6 +115,54 @@ describe('simulation input and replay', () => {
     expect(simulation.events.some((event) => event.type === 'land')).toBe(false);
     expect(simulation.state.stats.perfects).toBe(0);
     expect(simulation.state.stats.totalFlips).toBe(0);
+  });
+
+  it('limits fresh airborne bursts and keeps their added airtime below the jump cap', () => {
+    const measureAirtime = (useBursts: boolean): { airtime: number; count: number } => {
+      const simulation = new Simulation(8);
+      let count = 0;
+      simulation.step(true);
+      simulation.step(false);
+      for (let tick = 0; tick < 240 && !simulation.state.grounded && !simulation.state.crashed; tick += 1) {
+        const state = simulation.state;
+        const burst = useBursts
+          && state.burstsLeft > 0
+          && state.burstCooldown === 0
+          && state.vy > -200;
+        simulation.step(burst);
+        if (simulation.events.some((event) => event.type === 'thrusterBurst')) count += 1;
+      }
+      return { airtime: simulation.state.airtime, count };
+    };
+    const baseline = measureAirtime(false);
+    const spammed = measureAirtime(true);
+    expect(spammed.count).toBe(BURST_COUNT_PER_AIR_PHASE);
+    expect(spammed.airtime - baseline.airtime).toBeLessThan(0.35);
+    expect(spammed.airtime).toBeGreaterThan(baseline.airtime);
+    expect(BURST_COOLDOWN).toBe(0.4);
+  });
+
+  it('downgrades hard impacts and crashes impacts above the limit', () => {
+    const makeFalling = (impact: number): Simulation => {
+      const simulation = new Simulation(9);
+      const surface = simulation.course.surfaceAt(simulation.state.x)!;
+      simulation.state.grounded = false;
+      simulation.state.airtime = 0.3;
+      simulation.state.y = surface.y - WHEEL_VERTICAL_OFFSET - WHEEL_RADIUS - 4;
+      simulation.state.vy = impact;
+      return simulation;
+    };
+
+    const hard = makeFalling(HARD_IMPACT + 50);
+    hard.step(false);
+    expect(hard.events.some((event) => event.type === 'hardLanding')).toBe(true);
+    expect(hard.events.find((event) => event.type === 'land')).toMatchObject({ quality: 'great' });
+    expect(hard.state.stats.perfects).toBe(0);
+
+    const crash = makeFalling(CRASH_IMPACT + 50);
+    crash.step(false);
+    expect(crash.state.crashed).toBe(true);
+    expect(crash.state.crashReason).toBe('bad-landing');
   });
 
   it('disables rotation at zero energy and provides a deterministic replay round-trip', () => {
