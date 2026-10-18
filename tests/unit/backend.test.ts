@@ -1,5 +1,6 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { encodeInputLog, replayRun } from '../../src/sim/replay';
+import { decodeInputLog, encodeInputLog, replayRun } from '../../src/sim/replay';
 import { Simulation } from '../../src/sim/simulation';
 import { createHandlers } from '../../server/handlers';
 import { getRuntimeHandlers } from '../../server/runtime';
@@ -10,6 +11,7 @@ import type { HandlerRequest, HandlerResponse } from '../../server/types';
 
 const PLAYER_ID = '01234567-89ab-4cde-8fab-0123456789ab';
 const OTHER_PLAYER_ID = '11234567-89ab-4cde-8fab-0123456789ab';
+const THIRD_PLAYER_ID = '21234567-89ab-4cde-8fab-0123456789ab';
 const TOKEN_SECRET = 'test-run-token-secret-with-sufficient-entropy';
 const IP_SALT = 'test-ip-hash-salt';
 
@@ -130,7 +132,7 @@ describe('leaderboard request handlers', () => {
     });
   });
 
-  it('rejects tampered, expired, too-fast, and impossible score submissions', async () => {
+  it('rejects tampered scores, inputs, seeds, expired, and too-fast submissions', async () => {
     const tamperedContext = createTestContext();
     const tamperedRun = await startRun(tamperedContext.handlers);
     const separator = tamperedRun.runToken.indexOf('.');
@@ -145,6 +147,22 @@ describe('leaderboard request handlers', () => {
       claimed: { score: 0, distance: 0, flips: 0, durationMs: 0 },
     }));
     expect(invalidSignature.status).toBe(401);
+
+    const seedContext = createTestContext();
+    const seedRun = await startRun(seedContext.handlers);
+    const [encodedPayload, signature] = seedRun.runToken.split('.');
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as { seed: number };
+    payload.seed = (payload.seed + 1) >>> 0;
+    const alteredSeedToken = `${Buffer.from(JSON.stringify(payload)).toString('base64url')}.${signature}`;
+    const invalidSeed = await seedContext.handlers.submitScore(request('POST', {
+      runToken: alteredSeedToken,
+      playerId: PLAYER_ID,
+      nickname: 'Driver One',
+      inputLog: '',
+      claimed: { score: 0, distance: 0, flips: 0, durationMs: 0 },
+    }));
+    expect(invalidSeed.status).toBe(401);
+    expect(invalidSeed.body).toMatchObject({ error: 'invalid_run_token' });
 
     const expiredContext = createTestContext();
     const expiredRun = await startRun(expiredContext.handlers);
@@ -175,16 +193,32 @@ describe('leaderboard request handlers', () => {
     const impossibleRun = await startRun(impossibleContext.handlers);
     const replay = inputUntilCrash(impossibleRun.seed);
     impossibleContext.setNow(1_700_000_000_000 + replay.result.durationMs + 2_000);
-    const impossibleScore = replay.result.stats.score + Math.max(51, Math.ceil(replay.result.stats.score * 0.01) + 1);
-    const rejected = await impossibleContext.handlers.submitScore(request('POST', {
+    const tamperedScore = replay.result.stats.score + 1;
+    const rejectedScore = await impossibleContext.handlers.submitScore(request('POST', {
       runToken: impossibleRun.runToken,
       playerId: PLAYER_ID,
       nickname: 'Driver One',
       inputLog: replay.inputLog,
-      claimed: { ...claimedFor(replay.result), score: impossibleScore },
+      claimed: { ...claimedFor(replay.result), score: tamperedScore },
     }));
-    expect(rejected.status).toBe(422);
-    expect(rejected.body).toMatchObject({ error: 'replay_verification_failed' });
+    expect(rejectedScore.status).toBe(422);
+    expect(rejectedScore.body).toMatchObject({ error: 'replay_verification_failed' });
+
+    const inputContext = createTestContext();
+    const inputRun = await startRun(inputContext.handlers);
+    const inputReplay = inputUntilCrash(inputRun.seed);
+    inputContext.setNow(1_700_000_000_000 + inputReplay.result.durationMs + 2_000);
+    const alteredInputs = decodeInputLog(inputReplay.inputLog);
+    alteredInputs[0] = !alteredInputs[0];
+    const rejectedInputs = await inputContext.handlers.submitScore(request('POST', {
+      runToken: inputRun.runToken,
+      playerId: PLAYER_ID,
+      nickname: 'Driver One',
+      inputLog: encodeInputLog(alteredInputs),
+      claimed: claimedFor(inputReplay.result),
+    }));
+    expect(rejectedInputs.status).toBe(422);
+    expect(rejectedInputs.body).toMatchObject({ error: 'replay_verification_failed' });
   });
 
   it('validates JSON, UUIDs, nicknames, and server-backed rate limits', async () => {
@@ -230,8 +264,10 @@ describe('leaderboard request handlers', () => {
     const store = new MemoryStore();
     await store.ensurePlayer(PLAYER_ID);
     await store.ensurePlayer(OTHER_PLAYER_ID);
+    await store.ensurePlayer(THIRD_PLAYER_ID);
     await store.setNickname(PLAYER_ID, 'First Driver');
     await store.setNickname(OTHER_PLAYER_ID, 'Second Driver');
+    await store.setNickname(THIRD_PLAYER_ID, 'Third Driver');
     await store.saveScore({
       runId: 'score-1', playerId: PLAYER_ID, score: 500, distance: 50, flips: 2, maxCombo: 1, durationMs: 1_000,
       createdAt: '2024-01-07T12:00:00.000Z',
@@ -244,12 +280,17 @@ describe('leaderboard request handlers', () => {
       runId: 'score-3', playerId: OTHER_PLAYER_ID, score: 300, distance: 30, flips: 1, maxCombo: 1, durationMs: 2_000,
       createdAt: '2024-01-09T13:00:00.000Z',
     });
+    await store.saveScore({
+      runId: 'score-4', playerId: THIRD_PLAYER_ID, score: 300, distance: 30, flips: 1, maxCombo: 1, durationMs: 2_000,
+      createdAt: '2024-01-09T13:00:00.000Z',
+    });
     const context = createTestContext(now, { store });
     const allTime = await context.handlers.leaderboard(request('GET', undefined, { period: 'all', playerId: PLAYER_ID }));
     expect(allTime.body).toMatchObject({
       entries: [
         { rank: 1, nickname: 'First Driver', score: 500, isYou: true },
         { rank: 2, nickname: 'Second Driver', score: 300, isYou: false },
+        { rank: 3, nickname: 'Third Driver', score: 300, isYou: false },
       ],
       you: { best: 500, rank: 1 },
     });
@@ -257,9 +298,10 @@ describe('leaderboard request handlers', () => {
     expect(weekly.body).toMatchObject({
       entries: [
         { rank: 1, nickname: 'Second Driver', score: 300 },
-        { rank: 2, nickname: 'First Driver', score: 100, isYou: true },
+        { rank: 2, nickname: 'Third Driver', score: 300 },
+        { rank: 3, nickname: 'First Driver', score: 100, isYou: true },
       ],
-      you: { best: 100, rank: 2 },
+      you: { best: 100, rank: 3 },
     });
     expect((await context.handlers.leaderboard(request('GET', undefined, { period: 'invalid' }))).status).toBe(400);
 
@@ -272,5 +314,13 @@ describe('leaderboard request handlers', () => {
     const unavailable = await production.leaderboard(request('GET'));
     expect(unavailable.status).toBe(503);
     expect(unavailable.body).toMatchObject({ error: 'leaderboard_not_configured', mode: 'not-configured' });
+  });
+
+  it('keeps Supabase ranking SQL scoped to each period and deterministically ordered', async () => {
+    const migration = await readFile(new URL('../../supabase/migrations/0001_init.sql', import.meta.url), 'utf8');
+    expect(migration).toMatch(/select distinct on \(s\.player_id\)/i);
+    expect(migration).toMatch(/where p_since is null or s\.created_at >= p_since/i);
+    expect(migration).toMatch(/order by s\.player_id,\s*s\.score desc,\s*s\.created_at asc,\s*s\.run_id asc/i);
+    expect(migration).toMatch(/row_number\(\) over \(order by b\.score desc,\s*b\.created_at asc,\s*b\.player_id\)/i);
   });
 });

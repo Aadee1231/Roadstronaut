@@ -260,7 +260,7 @@ export class GameUI {
     }
     const status = this.root.querySelector<HTMLElement>('#submit-status');
     if (!this.currentRunToken) {
-      if (status) status.textContent = 'Local run only — global leaderboard not configured.';
+      if (status) status.textContent = 'Local run only — leaderboard unavailable.';
       return;
     }
     if (status) status.textContent = 'Verifying replay…';
@@ -277,10 +277,13 @@ export class GameUI {
           durationMs: Math.round(state.elapsed * 1000),
         },
       });
-      if (status) status.textContent = accepted.verified ? `Replay verified · rank ${accepted.rankAllTime ?? '—'} · ${this.mode === 'dev-memory' ? 'DEV LEADERBOARD' : 'GLOBAL GRID'}` : 'Run could not be verified.';
+      const boardLabel = this.mode === 'supabase'
+        ? 'GLOBAL GRID'
+        : this.mode === 'dev-memory' ? 'LOCAL DEV LEADERBOARD — NOT GLOBAL' : 'LEADERBOARD OFFLINE';
+      if (status) status.textContent = accepted.verified ? `Replay verified · rank ${accepted.rankAllTime ?? '—'} · ${boardLabel}` : 'Run could not be verified.';
     } catch (error) {
       if (status) status.textContent = error instanceof Error && error.message.includes('not_configured')
-        ? 'Global leaderboard offline — not configured.'
+        ? 'Leaderboard offline — not configured.'
         : 'Score not submitted. Your personal best is saved on this device.';
     }
   }
@@ -402,11 +405,13 @@ export class GameUI {
     try {
       const board = await getLeaderboard(this.period, this.playerId);
       this.mode = board.mode;
-      this.text('#board-mode', board.mode === 'dev-memory' ? 'DEV LEADERBOARD · LOCAL, NOT GLOBAL' : 'GLOBAL GRID · VERIFIED RUNS');
+      this.text('#board-mode', board.mode === 'supabase'
+        ? 'GLOBAL GRID · VERIFIED RUNS'
+        : board.mode === 'dev-memory' ? 'LOCAL DEV LEADERBOARD — NOT GLOBAL' : 'LEADERBOARD OFFLINE');
       this.renderLeaderboard(board);
     } catch (error) {
-      this.text('#board-mode', 'GLOBAL LEADERBOARD OFFLINE');
-      if (entries) entries.textContent = error instanceof Error && error.message.includes('not_configured') ? 'Global leaderboard offline — not configured.' : 'Leaderboard unavailable. Check your connection and retry.';
+      this.text('#board-mode', 'LEADERBOARD OFFLINE');
+      if (entries) entries.textContent = error instanceof Error && error.message.includes('not_configured') ? 'Leaderboard offline — not configured.' : 'Leaderboard unavailable. Check your connection and retry.';
       this.text('#board-self', '');
     }
     this.root.querySelector('[data-action="period-all"]')?.classList.toggle('is-active', this.period === 'all');

@@ -195,12 +195,11 @@ export function createHandlers(context: HandlerContext) {
       if (!await context.store!.consumeRun(run.id, timestamp)) return response(mode, 409, { error: 'run_already_used' });
 
       const verified = replayRun(payload.seed, inputs);
-      const exactClaimMatches = claimed.distance === verified.stats.distance
+      const exactClaimMatches = claimed.score === verified.stats.score
+        && claimed.distance === verified.stats.distance
         && claimed.flips === verified.stats.totalFlips
         && claimed.durationMs === verified.durationMs;
-      const scoreDifference = Math.abs(claimed.score - verified.stats.score);
-      const allowedScoreDifference = Math.max(50, Math.ceil(verified.stats.score * 0.01));
-      if (!verified.crashed || !exactClaimMatches || scoreDifference > allowedScoreDifference) {
+      if (!verified.crashed || !exactClaimMatches) {
         await context.store!.rejectRun(run.id);
         return response(mode, 422, { error: 'replay_verification_failed' });
       }

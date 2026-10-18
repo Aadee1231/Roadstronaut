@@ -100,7 +100,7 @@ as $$
     from public.scores s
     join public.players p on p.id = s.player_id
     where p_since is null or s.created_at >= p_since
-    order by s.player_id, s.score desc, s.created_at asc
+    order by s.player_id, s.score desc, s.created_at asc, s.run_id asc
   ),
   ranked as (
     select

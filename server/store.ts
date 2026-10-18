@@ -111,7 +111,10 @@ export class MemoryStore implements LeaderboardStore {
     for (const score of this.scores) {
       if (Date.parse(score.createdAt) < sinceTime) continue;
       const current = bestByPlayer.get(score.playerId);
-      if (!current || score.score > current.score || (score.score === current.score && score.createdAt < current.createdAt)) bestByPlayer.set(score.playerId, score);
+      if (!current || score.score > current.score || (score.score === current.score
+        && (score.createdAt < current.createdAt || (score.createdAt === current.createdAt && score.runId.localeCompare(current.runId) < 0)))) {
+        bestByPlayer.set(score.playerId, score);
+      }
     }
     const ranked = [...bestByPlayer.values()].sort((a, b) => b.score - a.score || a.createdAt.localeCompare(b.createdAt) || a.playerId.localeCompare(b.playerId));
     const youIndex = playerId ? ranked.findIndex((score) => score.playerId === playerId) : -1;

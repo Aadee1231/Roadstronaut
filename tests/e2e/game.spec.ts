@@ -65,7 +65,7 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
   await expect(page.locator('#submit-status')).toContainText('Replay verified', { timeout: 15_000 });
   await page.screenshot({ path: join(screens, 'game-over.png'), fullPage: true });
   await page.locator('#gameover-screen [data-action="leaderboard"]').click();
-  await expect(page.locator('#board-mode')).toContainText('DEV LEADERBOARD');
+  await expect(page.locator('#board-mode')).toHaveText('LOCAL DEV LEADERBOARD — NOT GLOBAL');
   // The dev store is shared with a reused dev server, so earlier runs may already be listed.
   await expect(page.locator('#board-entries .board-row').first()).toBeVisible();
   await page.screenshot({ path: join(screens, 'leaderboard.png'), fullPage: true });
@@ -187,5 +187,5 @@ test('leaderboard shows an honest offline message when its request fails', async
   await page.goto('/');
   await page.locator('#menu-screen [data-action="leaderboard"]').click();
   await expect(page.locator('#board-entries')).toContainText('Leaderboard unavailable. Check your connection and retry.');
-  await expect(page.locator('#board-mode')).toHaveText('GLOBAL LEADERBOARD OFFLINE');
+  await expect(page.locator('#board-mode')).toHaveText('LEADERBOARD OFFLINE');
 });
