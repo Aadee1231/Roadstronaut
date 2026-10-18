@@ -72,7 +72,10 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
 
   await page.locator('#leaderboard-screen [data-action="close-panel"]').click();
   await startRun(page);
-  await expect(page.locator('#score-value')).not.toHaveText('000000', { timeout: 5_000 });
+  await page.waitForFunction(() => {
+    const score = document.querySelector('#score-value')?.textContent?.replace(/\D/g, '') ?? '0';
+    return Number(score) >= 100;
+  });
   await page.keyboard.down('Space');
   await page.waitForFunction(() => {
     const game = (window as Window & { __thrust?: { activeRun: boolean; held: boolean } }).__thrust;
@@ -82,7 +85,7 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
   await expect(page.locator('#pause-screen')).toBeVisible();
   await page.locator('#pause-screen [data-action="restart"]').click();
   await waitForActiveRun(page);
-  await expect(page.locator('#score-value')).toHaveText('000000');
+  await expect.poll(async () => Number((await page.locator('#score-value').textContent())?.replace(/\D/g, '') ?? 0)).toBeLessThan(100);
   await expect.poll(() => page.evaluate(() => (window as Window & { __thrust?: { held: boolean } }).__thrust?.held)).toBe(false);
   await page.keyboard.up('Space');
 

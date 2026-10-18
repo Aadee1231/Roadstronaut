@@ -526,7 +526,7 @@ export class GameUI {
   private hide(id: string): void { this.root.querySelector(`#${id}`)?.classList.add('is-hidden'); }
 
   private hideAllPanels(): void {
-    for (const id of ['pause-screen', 'gameover-screen', 'leaderboard-screen', 'howto-screen']) this.hide(id);
+    for (const id of ['pause-screen', 'gameover-screen', 'leaderboard-screen', 'howto-screen', 'about-screen']) this.hide(id);
   }
 
   private playing = false;
