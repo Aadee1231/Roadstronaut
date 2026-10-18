@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { CAR_HEIGHT, FIXED_DT, WHEEL_RADIUS, WHEELBASE } from '../sim/constants';
+import { CAR_HEIGHT, FIXED_DT, WHEEL_RADIUS, WHEELBASE, timeAtDistance } from '../sim/constants';
 import { BASE_Y, pistonHeight, type CeilingSegment, type CourseSegment, type Hazard } from '../sim/course';
 import { encodeInputLog } from '../sim/replay';
 import { Simulation, WHEEL_VERTICAL_OFFSET } from '../sim/simulation';
@@ -83,6 +83,7 @@ export class GameScene extends Phaser.Scene {
   private exhaust!: Phaser.GameObjects.Particles.ParticleEmitter;
   private world!: Phaser.GameObjects.Container;
   private zoom = 1;
+  private vrunZoom = 1;
   private camY = BASE_Y;
   private wheelSpin = 0;
   private flameTimer = 0;
@@ -370,6 +371,28 @@ export class GameScene extends Phaser.Scene {
         case 'suctionRelease':
           this.exhaust.explode(12, state.x, state.y);
           break;
+        case 'verticalSuction':
+          this.sparks.explode(28, state.x, state.y + CAR_HEIGHT / 2);
+          cam.shake(150, 0.005);
+          break;
+        case 'thrustersArmed':
+          this.flameTimer = Math.max(this.flameTimer, 0.5);
+          this.exhaust.explode(16, rear.x, rear.y);
+          break;
+        case 'verticalLaunch':
+          this.flameTimer = Math.max(this.flameTimer, 0.9);
+          this.dust.explode(24, state.x, state.y + CAR_HEIGHT);
+          this.sparks.explode(34, state.x, state.y);
+          this.exhaust.explode(26, state.x, state.y);
+          cam.shake(260, 0.009);
+          cam.flash(140, 160, 240, 255, true);
+          break;
+        case 'verticalRunLanded':
+          this.sparks.explode(40, state.x, state.y);
+          this.exhaust.explode(36, state.x, state.y);
+          cam.shake(180, 0.006);
+          cam.flash(120, 255, 210, 120, true);
+          break;
         case 'hardLanding':
           cam.shake(220, 0.008);
           this.dust.explode(14, (rear.x + front.x) / 2, (rear.y + front.y) / 2);
@@ -412,7 +435,11 @@ export class GameScene extends Phaser.Scene {
       displayedAngle = this.angleBlendFrom + angleDelta * blend;
       if (blend >= 1) this.angleBlendActive = false;
     }
-    const zoom = this.zoom;
+    const viewGuess = this.scale.width / this.zoom;
+    const runs = this.simulation.course.verticalRunsInRange(x - viewGuess, x + viewGuess * 1.4);
+    const inRun = runs.some((run) => x >= run.x0 - 40 && x <= run.landingX1);
+    this.vrunZoom = Phaser.Math.Linear(this.vrunZoom, inRun ? 0.58 : 1, 1 - Math.exp(-dt * 1.8));
+    const zoom = this.zoom * this.vrunZoom;
     const viewW = this.scale.width / zoom;
     const viewH = this.scale.height / zoom;
     const anchor = this.portrait ? 0.66 : 0.68;
@@ -486,6 +513,10 @@ export class GameScene extends Phaser.Scene {
     }
     for (const seg of segments) {
       if (seg.kind === 'gap') continue;
+      if (seg.kind === 'vramp') {
+        this.drawVRampFill(seg, bottom, biome.ground, edge);
+        continue;
+      }
       g.fillStyle(biome.ground, 1);
       g.fillPoints([{ x: seg.x0, y: seg.y0 }, { x: seg.x1, y: seg.y1 }, { x: seg.x1, y: bottom }, { x: seg.x0, y: bottom }], true);
       // depth strata
@@ -505,6 +536,10 @@ export class GameScene extends Phaser.Scene {
     for (const seg of segments) {
       if (seg.kind === 'gap') {
         this.drawGapRims(seg, elapsed);
+        continue;
+      }
+      if (seg.kind === 'vramp') {
+        this.drawVRampEdge(seg, elapsed);
         continue;
       }
       const isLaunch = seg.kind === 'launch';
@@ -571,6 +606,153 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private vrampCurve(seg: CourseSegment, steps = 40): { x: number; y: number }[] {
+    const course = this.simulation.course;
+    const pts: { x: number; y: number }[] = [];
+    for (let i = 0; i <= steps; i += 1) {
+      const x = seg.x0 + (seg.x1 - seg.x0) * (i / steps);
+      pts.push({ x, y: course.surfaceAt(x)?.y ?? seg.y0 });
+    }
+    return pts;
+  }
+
+  private drawVRampFill(seg: CourseSegment, bottom: number, ground: number, edge: number): void {
+    const g = this.track;
+    const pts = this.vrampCurve(seg);
+    g.fillStyle(ground, 1);
+    const poly = [...pts, { x: seg.x1, y: bottom }, { x: seg.x0, y: bottom }];
+    g.fillPoints(poly, true);
+    // depth strata following the curve
+    for (const [depth, alpha] of [[16, 0.22], [42, 0.14], [90, 0.09], [170, 0.06]] as const) {
+      g.lineStyle(2, edge, alpha);
+      for (let i = 0; i < pts.length - 1; i += 1) {
+        g.lineBetween(pts[i]!.x, pts[i]!.y + depth, pts[i + 1]!.x, pts[i + 1]!.y + depth);
+      }
+    }
+  }
+
+  private drawVRampEdge(seg: CourseSegment, elapsed: number): void {
+    const fx = this.fx;
+    const g = this.track;
+    const state = this.simulation.state;
+    const pts = this.vrampCurve(seg);
+    const color = 0x2ef2ff;
+    const climbing = state.grounded && state.x >= seg.x0 && state.x <= seg.x1;
+    // glow + core edge along the curve
+    for (const [width, alpha] of [[10, climbing ? 0.3 : 0.18], [3, 0.95]] as const) {
+      fx.lineStyle(width, color, alpha);
+      for (let i = 0; i < pts.length - 1; i += 1) {
+        fx.lineBetween(pts[i]!.x, pts[i]!.y, pts[i + 1]!.x, pts[i + 1]!.y);
+      }
+    }
+    // suction rail markers: animated chevrons riding up the curve
+    const phase = (elapsed * (climbing ? 3.2 : 1.6)) % 1;
+    for (let i = 0; i < 7; i += 1) {
+      const u = (i + phase) / 7;
+      const idx = Math.min(pts.length - 2, Math.floor(u * (pts.length - 1)));
+      const p0 = pts[idx]!;
+      const p1 = pts[idx + 1]!;
+      const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+      const nx = -Math.sin(ang);
+      const ny = Math.cos(ang);
+      const cx = p0.x + (p1.x - p0.x) * 0.5 + nx * 12;
+      const cy = p0.y + (p1.y - p0.y) * 0.5 + ny * 12;
+      const fade = 0.5 + 0.5 * Math.sin(u * Math.PI);
+      fx.lineStyle(3, color, fade * (climbing ? 1 : 0.7));
+      fx.beginPath();
+      fx.moveTo(cx - Math.cos(ang) * 8, cy - Math.sin(ang) * 8);
+      fx.lineTo(cx + Math.cos(ang) * 3, cy + Math.sin(ang) * 3);
+      fx.lineTo(cx - Math.cos(ang) * 8 - Math.sin(ang) * -8, cy - Math.sin(ang) * 8 - Math.cos(ang) * -8);
+      fx.strokePath();
+    }
+    // lip beacon
+    const lip = pts[pts.length - 1]!;
+    const pulse = 0.6 + 0.4 * Math.sin(elapsed * 10);
+    fx.fillStyle(0xffb347, 0.9 * pulse);
+    fx.fillCircle(lip.x, lip.y - 4, 6);
+    fx.fillStyle(0xff6b4a, 0.3 * pulse);
+    fx.fillCircle(lip.x, lip.y - 4, 20);
+    // support struts under the low half of the curve
+    g.lineStyle(2, 0x2ef2ff, 0.25);
+    for (let i = 2; i < pts.length * 0.5; i += 4) {
+      g.lineBetween(pts[i]!.x, pts[i]!.y + 4, pts[i]!.x + 30, pts[i]!.y + 70);
+      g.lineBetween(pts[i]!.x + 30, pts[i]!.y + 70, pts[i]!.x + 60, pts[i]!.y + 6);
+    }
+  }
+
+  private drawVehicleLineup(h: Hazard, elapsed: number): void {
+    const g = this.track;
+    const fx = this.fx;
+    const blink = 0.5 + 0.5 * Math.sin(elapsed * 7 + h.x);
+    for (const unit of h.vehicles ?? []) {
+      const x0 = h.x + unit.dx;
+      const x1 = x0 + unit.width;
+      const base = h.baseY;
+      const top = base - unit.height;
+      const w = unit.width;
+      const hh = unit.height;
+      // body silhouette by kind
+      if (unit.kind === 'semi') {
+        g.fillStyle(0x131b3d, 1);
+        g.fillRect(x0, top + hh * 0.12, w * 0.78, hh * 0.88);          // trailer
+        g.fillRect(x0 + w * 0.78, top + hh * 0.4, w * 0.22, hh * 0.6); // cab
+        g.fillStyle(0x1d2a55, 1);
+        g.fillRect(x0 + w * 0.8, top + hh * 0.44, w * 0.16, hh * 0.22); // windshield
+      } else if (unit.kind === 'pickup') {
+        g.fillStyle(0x15204a, 1);
+        g.fillRect(x0, top + hh * 0.45, w, hh * 0.55);                 // bed+body
+        g.fillRect(x0 + w * 0.3, top, w * 0.38, hh * 0.5);             // angular cab
+        g.fillStyle(0x22335f, 1);
+        g.fillRect(x0 + w * 0.34, top + hh * 0.08, w * 0.3, hh * 0.26);
+      } else if (unit.kind === 'sport') {
+        g.fillStyle(0x101a40, 1);
+        g.fillPoints([
+          { x: x0, y: base - hh * 0.35 }, { x: x0 + w * 0.12, y: top + hh * 0.3 },
+          { x: x0 + w * 0.5, y: top }, { x: x0 + w * 0.82, y: top + hh * 0.28 },
+          { x: x1, y: base - hh * 0.3 }, { x: x1, y: base }, { x: x0, y: base },
+        ], true);
+        g.fillStyle(0x24407a, 1);
+        g.fillPoints([
+          { x: x0 + w * 0.34, y: top + hh * 0.12 }, { x: x0 + w * 0.5, y: top + hh * 0.02 },
+          { x: x0 + w * 0.68, y: top + hh * 0.14 }, { x: x0 + w * 0.62, y: top + hh * 0.3 },
+          { x: x0 + w * 0.38, y: top + hh * 0.3 },
+        ], true);
+      } else {
+        // sedan: rounded wedge
+        g.fillStyle(0x131f49, 1);
+        g.fillPoints([
+          { x: x0, y: base - hh * 0.3 }, { x: x0 + w * 0.16, y: top + hh * 0.42 },
+          { x: x0 + w * 0.4, y: top + hh * 0.05 }, { x: x0 + w * 0.72, y: top + hh * 0.12 },
+          { x: x0 + w * 0.9, y: top + hh * 0.45 }, { x: x1, y: base - hh * 0.22 },
+          { x: x1, y: base }, { x: x0, y: base },
+        ], true);
+        g.fillStyle(0x20325e, 1);
+        g.fillPoints([
+          { x: x0 + w * 0.42, y: top + hh * 0.14 }, { x: x0 + w * 0.68, y: top + hh * 0.2 },
+          { x: x0 + w * 0.78, y: top + hh * 0.42 }, { x: x0 + w * 0.44, y: top + hh * 0.4 },
+        ], true);
+      }
+      // wheels + neon trim + taillight
+      g.fillStyle(0x05040f, 1);
+      const wheelR = Math.min(9, hh * 0.16);
+      g.fillCircle(x0 + w * 0.2, base - wheelR * 0.4, wheelR);
+      g.fillCircle(x0 + w * 0.78, base - wheelR * 0.4, wheelR);
+      fx.lineStyle(2, 0x2ef2ff, 0.55);
+      fx.lineBetween(x0 + 3, top + hh * 0.55, x1 - 3, top + hh * 0.55);
+      fx.fillStyle(0xff3b5c, 0.7 + 0.3 * blink);
+      fx.fillRect(x1 - 5, top + hh * 0.3, 3, hh * 0.14);
+      fx.fillStyle(0x9ffbff, 0.5 + 0.3 * blink);
+      fx.fillRect(x0 + 2, top + hh * 0.3, 3, hh * 0.12);
+    }
+    // hazard outline: orange warning edge along the lineup silhouette
+    fx.lineStyle(3, 0xffb347, 0.85);
+    fx.lineBetween(h.x - 2, h.baseY, h.x + h.width + 2, h.baseY);
+    const tallest = h.height;
+    fx.fillStyle(0xff3b5c, 0.5 + 0.5 * blink);
+    fx.fillCircle(h.x - 8, h.baseY - tallest + 4, 4);
+    fx.fillCircle(h.x + h.width + 8, h.baseY - tallest + 4, 4);
+  }
+
   private drawRampDetail(seg: CourseSegment, launch: boolean, elapsed: number): void {
     const g = this.track;
     const fx = this.fx;
@@ -633,6 +815,10 @@ export class GameScene extends Phaser.Scene {
   private drawObstacle(h: Hazard, elapsed: number): void {
     const g = this.track;
     const fx = this.fx;
+    if (h.kind === 'vehicles') {
+      this.drawVehicleLineup(h, elapsed);
+      return;
+    }
     const topY = h.baseY - (h.kind === 'piston' ? pistonHeight(h, this.simulation.state.elapsed) : h.height);
     if (h.kind === 'beam') {
       const blink = 0.55 + 0.45 * Math.sin(elapsed * 8 + h.x);
@@ -779,5 +965,36 @@ export class GameScene extends Phaser.Scene {
 
   getDebugSnapshot(): { state: Simulation['state']; activeRun: boolean; held: boolean } {
     return { state: this.simulation.state, activeRun: this.activeRun, held: this.inputHeld };
+  }
+
+  // Dev-only debug hook (exposed on window as __roadstronautDebug when
+  // import.meta.env.DEV): repositions the car along the generated course so
+  // playtests can reach deep-course features instantly.
+  debugTeleport(x: number): void {
+    const state = this.simulation.state;
+    const surface = this.simulation.course.surfaceAt(x);
+    if (!surface) return;
+    state.x = x;
+    state.y = surface.y - CAR_HEIGHT;
+    state.vy = 0;
+    state.grounded = true;
+    state.inverted = false;
+    state.angle = surface.slope;
+    state.angularVelocity = 0;
+    state.elapsed = Math.max(state.elapsed, timeAtDistance(x));
+    state.speed = state.vx;
+    this.previousX = state.x;
+    this.previousY = state.y;
+    this.previousAngle = state.angle;
+  }
+
+  debugCourseLandmarks(): { vruns: unknown[]; vehicleRows: unknown[] } {
+    const course = this.simulation.course;
+    return {
+      vruns: course.verticalRunsInRange(0, this.simulation.state.x + 400000),
+      vehicleRows: course.hazardsAhead(0, this.simulation.state.x + 400000)
+        .filter((hazard) => hazard.kind === 'vehicles')
+        .map((hazard) => ({ x: hazard.x, width: hazard.width, requiresRamp: hazard.requiresRamp })),
+    };
   }
 }

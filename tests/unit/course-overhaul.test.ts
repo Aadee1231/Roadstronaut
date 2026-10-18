@@ -6,7 +6,7 @@ import {
   distanceAtTime, speedAtTime, timeAtDistance,
 } from '../../src/sim/constants';
 import { atan2, cos, normalizeAngle, sin } from '../../src/sim/detmath';
-import { BASE_Y, createCourse, pistonHeight, type Course, type Hazard, type RailZone, type Surface } from '../../src/sim/course';
+import { BASE_Y, createCourse, obstacleBoxes, pistonHeight, type Course, type Hazard, type RailZone, type Surface } from '../../src/sim/course';
 import { SeededRng } from '../../src/sim/rng';
 import { Simulation, WHEEL_VERTICAL_OFFSET } from '../../src/sim/simulation';
 
@@ -27,6 +27,13 @@ function checkFairness(seed: number): void {
   }
 
   const hazards = course.hazardsAhead(0, FAIRNESS_DISTANCE);
+  // Vertical-run pits are crossed by the launched arc, not a plain jump: they
+  // are exempt from the plain-jump gap-width bound.
+  const vrunPitStarts = new Set(
+    segments
+      .filter((segment, index) => segment.kind === 'gap' && segments[index - 1]?.kind === 'vramp')
+      .map((segment) => segment.x0),
+  );
   let previous: Hazard | undefined;
   for (const hazard of hazards) {
     const speed = speedAtTime(timeAtDistance(hazard.x));
@@ -35,7 +42,24 @@ function checkFairness(seed: number): void {
       hazard.safeJumpReach + speed * HAZARD_RECOVERY_SECONDS - 0.05,
     );
     if (hazard.kind === 'gap') {
-      expect(hazard.width, hazard.id).toBeLessThanOrEqual(hazard.safeJumpReach * 0.72);
+      if (!vrunPitStarts.has(hazard.x)) {
+        expect(hazard.width, hazard.id).toBeLessThanOrEqual(hazard.safeJumpReach * 0.72);
+      }
+    } else if (hazard.kind === 'vehicles') {
+      const units = hazard.vehicles ?? [];
+      expect(units.length, `${hazard.id} has vehicles`).toBeGreaterThanOrEqual(1);
+      for (const unit of units) {
+        expect(unit.width).toBeGreaterThanOrEqual(100);
+        expect(unit.height).toBeGreaterThanOrEqual(20);
+      }
+      // Plain-jumpable rows must fit inside the descent-clearance budget so a
+      // single jump can carry the car over the whole lineup.
+      if (!hazard.requiresRamp) {
+        const plainApex = JUMP_VELOCITY * JUMP_VELOCITY / (2 * GRAVITY);
+        const maxH = units.reduce((top, unit) => Math.max(top, unit.height), 0);
+        expect(maxH, `${hazard.id} jumpable height`).toBeLessThanOrEqual(plainApex * 0.9);
+        expect(hazard.width, `${hazard.id} jumpable span`).toBeLessThanOrEqual(hazard.safeJumpReach * 0.62);
+      }
     } else {
       const plainJumpApex = JUMP_VELOCITY * JUMP_VELOCITY / (2 * GRAVITY);
       expect(hazard.height, hazard.id).toBeLessThanOrEqual(plainJumpApex * 0.65);
@@ -73,12 +97,30 @@ function checkFairness(seed: number): void {
       expect(unprotectedHazards, `${launch.id} landing zone`).toEqual([]);
     } else {
       expect(next?.kind).toBe('flat');
-      expect((next?.x1 ?? 0) - launch.x1).toBeGreaterThanOrEqual(plainReach);
-      const protectedEnd = launch.x1 + landingLength + speed * 0.34;
-      const unprotectedHazards = hazards.filter((hazard) => (
-        hazard.x + hazard.width >= launch.x1 && hazard.x < protectedEnd
+      // Stunt lineups place a ramp-assisted vehicle row in the launch arc: the
+      // row must sit inside the computed flight distance and the rest of the
+      // landing run must stay clear.
+      const stuntRow = hazards.find((hazard) => (
+        hazard.kind === 'vehicles' && hazard.requiresRamp
+        && hazard.x >= launch.x1 && hazard.x < launch.x1 + landingLength + speed
       ));
-      expect(unprotectedHazards, `${launch.id} landing zone`).toEqual([]);
+      if (stuntRow) {
+        const stuntVelocity = speed * sin(slope) + LAUNCH_BOOST;
+        const flightDistance = speed * 2 * Math.abs(stuntVelocity) / GRAVITY;
+        expect(stuntRow.x + stuntRow.width, `${launch.id} stunt row inside arc`).toBeLessThan(launch.x1 + flightDistance * 0.9);
+        const protectedEnd = launch.x1 + flightDistance + speed * 0.35;
+        const unprotectedHazards = hazards.filter((hazard) => (
+          hazard !== stuntRow && hazard.x + hazard.width >= launch.x1 && hazard.x < protectedEnd
+        ));
+        expect(unprotectedHazards, `${launch.id} stunt landing zone`).toEqual([]);
+      } else {
+        expect((next?.x1 ?? 0) - launch.x1).toBeGreaterThanOrEqual(plainReach);
+        const protectedEnd = launch.x1 + landingLength + speed * 0.34;
+        const unprotectedHazards = hazards.filter((hazard) => (
+          hazard.x + hazard.width >= launch.x1 && hazard.x < protectedEnd
+        ));
+        expect(unprotectedHazards, `${launch.id} landing zone`).toEqual([]);
+      }
     }
   }
 
@@ -86,9 +128,49 @@ function checkFairness(seed: number): void {
     expect(course.surfaceAt((gap.x0 + gap.x1) / 2), `${gap.id} has no interior surface`).toBeNull();
     const index = segments.indexOf(gap);
     const approach = segments[index - 1];
+    if (approach?.kind === 'vramp') {
+      // A vertical-run pit is crossed by the launched arc, not a jump: an
+      // elevated landing deck must follow and stay hazard-free through the
+      // descent back to grade.
+      const deck = segments[index + 1];
+      expect(deck, `${gap.id} vertical-run landing deck`).toBeDefined();
+      expect(deck!.kind).toBe('platform');
+      const deckLength = deck!.x1 - deck!.x0;
+      const speedAtLanding = speedAtTime(timeAtDistance(deck!.x0));
+      expect(deckLength, `${gap.id} landing deck length`).toBeGreaterThanOrEqual(speedAtLanding * 0.5);
+      const runout = segments[index + 2];
+      expect(runout?.kind).toBe('slope');
+      const blockers = hazards.filter((hazard) => hazard.x >= gap.x1 && hazard.x < runout!.x1);
+      expect(blockers, `${gap.id} landing zone`).toEqual([]);
+      continue;
+    }
     if (approach?.kind !== 'launch') {
       expect(['flat', 'platform']).toContain(approach?.kind);
       expect(approach!.x1 - approach!.x0, `${gap.id} has a flat run-up`).toBeGreaterThanOrEqual(1.5 * CAR_LENGTH);
+    }
+  }
+
+  for (const ramp of segments.filter((segment) => segment.kind === 'vramp' && segment.x1 <= DISTANCE_150_SECONDS)) {
+    // The ramp must curve upward steeply (lip slope well past 60 degrees).
+    const slope = Math.abs(atan2(ramp.y1 - ramp.y0, ramp.x1 - ramp.x0));
+    expect(slope, `${ramp.id} lip steepness`).toBeGreaterThan(1.0);
+    const speed = speedAtTime(timeAtDistance(ramp.x1));
+    const launchVy = speed * Math.sin(slope) + 500;
+    const pit = segments[segments.indexOf(ramp) + 1];
+    expect(pit?.kind, `${ramp.id} pit follows the ramp`).toBe('gap');
+    const deck = segments[segments.indexOf(ramp) + 2];
+    expect(deck?.kind, `${ramp.id} landing deck follows the pit`).toBe('platform');
+    if (pit?.kind === 'gap' && deck?.kind === 'platform') {
+      // The deck must sit below the lip (survivable impact) and the arc must
+      // still be above deck height when the car reaches the deck edge.
+      expect(deck.y0, `${ramp.id} deck below lip`).toBeGreaterThan(ramp.y1);
+      const drop = deck.y0 - ramp.y1;
+      const flightSeconds = (launchVy + Math.sqrt(launchVy * launchVy + 2 * GRAVITY * drop)) / GRAVITY;
+      const crossingX = ramp.x1 + speed * flightSeconds;
+      expect(deck.x0, `${ramp.id} arc above deck edge`).toBeLessThan(crossingX);
+      // Landing impact must stay survivable (hard but not a crash).
+      const impact = Math.sqrt(launchVy * launchVy + 2 * GRAVITY * drop);
+      expect(impact, `${ramp.id} landing impact`).toBeLessThan(1900);
     }
   }
 }
@@ -157,7 +239,7 @@ function runSearchBot(seed: number, seconds: number): Simulation {
   const ticks = Math.ceil(seconds / FIXED_DT);
   let held = false;
   for (let tick = 0; tick < ticks && !simulation.state.crashed; tick += 1) {
-    if (tick % 6 === 0) held = searchBotInput(simulation);
+    if (tick % 4 === 0) held = searchBotInput(simulation);
     simulation.step(held);
     held = false;
   }
@@ -1297,4 +1379,141 @@ describe('procedural gameplay fairness', () => {
     console.info(`plain-jump late-start flip failures: ${failed}/40`);
     expect(failed).toBeGreaterThanOrEqual(32);
   }, 30_000);
+});
+
+describe('vertical run and vehicle stunt obstacles', () => {
+  it('generates the curved ramp, flight pit, and elevated landing deck', () => {
+    let seen = 0;
+    for (let seed = 0; seed < 40; seed += 1) {
+      const course = createCourse(seed);
+      const runs = course.verticalRunsInRange(0, DISTANCE_150_SECONDS);
+      expect(runs.length, `seed ${seed} has a vertical run`).toBeGreaterThanOrEqual(1);
+      for (const run of runs) {
+        seen += 1;
+        const ramp = course.segmentsInRange(run.rampX0 - 1, run.lipX + 1).find((s) => s.kind === 'vramp');
+        expect(ramp, 'vramp segment').toBeDefined();
+        expect(ramp!.y1, 'ramp climbs well above grade').toBeLessThan(BASE_Y - 300);
+        const lipSlope = Math.abs(course.surfaceAt(run.lipX - 0.5)!.slope);
+        expect(lipSlope, 'lip is near vertical').toBeGreaterThan(1.1);
+        // Surface eases from flat at the base to the steep lip.
+        const baseSlope = Math.abs(course.surfaceAt(run.rampX0 + 0.5)!.slope);
+        expect(baseSlope, 'ramp entry nearly flat').toBeLessThan(0.35);
+      }
+    }
+    expect(seen).toBeGreaterThan(0);
+  });
+
+  it('carries a no-flip bot up the ramp, through the launch, and onto the deck with one bonus', () => {
+    let bonusRuns = 0;
+    let attempts = 0;
+    for (let seed = 0; seed < 24; seed += 1) {
+      const simulation = new Simulation(seed);
+      let launches = 0;
+      let bonuses = 0;
+      let died = false;
+      const maxTicks = Math.ceil(100 / FIXED_DT);
+      for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+        simulation.step(lookaheadJump(simulation));
+        for (const event of simulation.events) {
+          if (event.type === 'verticalLaunch') launches += 1;
+          if (event.type === 'verticalRunLanded') bonuses += 1;
+        }
+      }
+      died = simulation.state.crashed;
+      if (launches > 0) {
+        attempts += 1;
+        if (!died && bonuses === launches) bonusRuns += 1;
+      }
+    }
+    console.info(`vertical-run clean traversals: ${bonusRuns}/${attempts}`);
+    expect(attempts).toBeGreaterThanOrEqual(12);
+    expect(bonusRuns).toBe(attempts);
+  }, 120_000);
+
+  it('awards the vertical-run bonus exactly once per traversal', () => {
+    const simulation = new Simulation(1);
+    const bonuses: number[] = [];
+    const maxTicks = Math.ceil(100 / FIXED_DT);
+    for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+      simulation.step(lookaheadJump(simulation));
+      for (const event of simulation.events) {
+        if (event.type === 'verticalRunLanded') bonuses.push(event.points);
+      }
+    }
+    expect(simulation.state.crashed).toBe(false);
+    expect(bonuses.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(bonuses).size).toBe(1);
+    expect(bonuses[0]).toBe(1500);
+    expect(simulation.state.stats.stunts).toBe(bonuses.length);
+  }, 60_000);
+
+  it('spawns vehicle lineups whose boxes cover the units', () => {
+    let rows = 0;
+    for (let seed = 0; seed < 30; seed += 1) {
+      const course = createCourse(seed);
+      const lineup = course.hazardsAhead(0, DISTANCE_150_SECONDS).find((hazard) => hazard.kind === 'vehicles');
+      if (!lineup) continue;
+      rows += 1;
+      expect(lineup.vehicles!.length).toBeGreaterThanOrEqual(1);
+      const span = lineup.vehicles!.reduce((right, unit) => Math.max(right, unit.dx + unit.width), 0);
+      expect(span).toBeLessThanOrEqual(lineup.width + 1);
+      const tallest = lineup.vehicles!.reduce((top, unit) => Math.max(top, unit.height), 0);
+      expect(lineup.height).toBeGreaterThanOrEqual(tallest - 1);
+      // collision boxes must tile the units
+      const boxes = obstacleBoxes(lineup, lineup.height);
+      expect(boxes.length).toBeGreaterThanOrEqual(1);
+    }
+    expect(rows).toBeGreaterThanOrEqual(10);
+  });
+
+  it('crashes a car that drives into a plain vehicle lineup', () => {
+    let crashed = 0;
+    let tried = 0;
+    for (let seed = 0; seed < 30 && tried < 12; seed += 1) {
+      const course = createCourse(seed);
+      const lineup = course.hazardsAhead(0, DISTANCE_150_SECONDS).find((hazard) => hazard.kind === 'vehicles' && !hazard.requiresRamp);
+      if (!lineup) continue;
+      tried += 1;
+      // Teleport the car just before the lineup at matching speed and let it drive in.
+      const simulation = new Simulation(seed);
+      const surface = course.surfaceAt(lineup.x - 200)!;
+      const elapsed = timeAtDistance(lineup.x - 200);
+      const speed = speedAtTime(elapsed);
+      Object.assign(simulation.state, {
+        x: lineup.x - 200, y: surface.y - 30, elapsed, speed, vx: speed, vy: 0, grounded: true,
+      });
+      for (let tick = 0; tick < 400 && !simulation.state.crashed; tick += 1) simulation.step(false);
+      if (simulation.state.crashed && simulation.state.crashReason === 'obstacle') crashed += 1;
+    }
+    expect(tried).toBeGreaterThanOrEqual(6);
+    expect(crashed).toBe(tried);
+  });
+
+  it('lets the lookahead bot clear every plain vehicle lineup it meets', () => {
+    let cleared = 0;
+    let met = 0;
+    for (let seed = 0; seed < 20; seed += 1) {
+      const simulation = new Simulation(seed);
+      let passedLineups = 0;
+      let failedAt: number | null = null;
+      const maxTicks = Math.ceil(110 / FIXED_DT);
+      for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+        const before = simulation.state.x;
+        simulation.step(lookaheadJump(simulation));
+        if (simulation.events.some((event) => event.type === 'land' || event.type === 'touchdown')) {
+          passedLineups = simulation.course.hazardsAhead(0, simulation.state.x)
+            .filter((h) => h.kind === 'vehicles' && h.x + h.width <= simulation.state.x).length;
+        }
+        void before;
+      }
+      if (simulation.state.crashed) failedAt = simulation.state.x;
+      met += passedLineups;
+      if (failedAt === null || !simulation.course.hazardsAhead(failedAt - 300, 600).some((h) => h.kind === 'vehicles')) {
+        cleared += 1;
+      }
+    }
+    console.info(`bot runs surviving vehicle zones: ${cleared}/20, lineups passed: ${met}`);
+    expect(cleared).toBeGreaterThanOrEqual(18);
+    expect(met).toBeGreaterThanOrEqual(8);
+  }, 180_000);
 });

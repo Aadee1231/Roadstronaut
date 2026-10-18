@@ -8,13 +8,14 @@ import {
   NEAR_MISS_CLEARANCE, PERFECT_LIMIT, ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND,
   RECOVERY_ANGULAR_SPEED, RECOVERY_MARGIN, RECOVERY_TRIGGER_OFF, SUCTION_ALIGN, SUCTION_POINTS_PER_SECOND,
   SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
+  VERTICAL_LAUNCH_BOOST, VERTICAL_RUN_BONUS, VRAMP_FAN_DRAIN,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
 } from './constants.js';
 import {
-  BASE_Y, createCourse, pistonHeight, type CeilingSegment, type Course, type Surface,
+  BASE_Y, createCourse, obstacleBoxes, pistonHeight, type CeilingSegment, type Course, type Surface,
 } from './course.js';
 import { atan2, clamp, cos, max, min, normalizeAngle, sin } from './detmath.js';
-import { awardLanding, awardNearMiss, createRunStats, type LandingQuality, type RunStats } from './scoring.js';
+import { awardLanding, awardNearMiss, comboMultiplier, createRunStats, type LandingQuality, type RunStats } from './scoring.js';
 
 export type SimEvent =
   | { type: 'jump' | 'superLaunch' | 'takeoff' | 'energyEmpty' | 'milestone' }
@@ -29,6 +30,11 @@ export type SimEvent =
   | { type: 'suctionRelease'; reason: 'end' | 'empty' }
   | { type: 'suctionBonus'; seconds: number; points: number }
   | { type: 'nearMiss'; hazardId: string }
+  | { type: 'verticalRunApproach' }
+  | { type: 'verticalSuction' }
+  | { type: 'thrustersArmed' }
+  | { type: 'verticalLaunch' }
+  | { type: 'verticalRunLanded'; points: number }
   | { type: 'crash'; reason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' };
 
 export interface SimulationState {
@@ -98,6 +104,9 @@ export class Simulation {
   private recovering = false;
   private recoveryTarget = 0;
   private railPhase = false;
+  private verticalRunArmed = false;
+  private announcedVRunLip = -1;
+  private thrustersArmedAt = -1;
 
   constructor(seed: number) {
     this.course = createCourse(seed);
@@ -188,7 +197,18 @@ export class Simulation {
       const previousSurface = this.course.surfaceAt(this.previousX);
       const surface = this.course.surfaceAt(state.x);
       if (surface) this.syncGroundPose(surface);
-      if (newPress && surface && surface.segment.kind !== 'quarter') {
+      this.stepVerticalRun(previousSurface, surface, dt);
+      if (
+        previousSurface?.segment.kind === 'vramp'
+        && (!surface || surface.segment.kind !== 'vramp')
+      ) {
+        // Lip of the vertical run: the suction lets go and the compressed-air
+        // thruster fires, adding a tuned impulse to the surface momentum.
+        this.leaveGround();
+        state.vy = state.speed * sin(previousSurface.slope) + VERTICAL_LAUNCH_BOOST;
+        this.verticalRunArmed = true;
+        this.events.push({ type: 'verticalLaunch' });
+      } else if (newPress && surface && surface.segment.kind !== 'quarter' && surface.segment.kind !== 'vramp') {
         const launchWindow = surface.segment.kind === 'launch'
           && state.x >= surface.segment.x1 - (surface.segment.x1 - surface.segment.x0) * LAUNCH_WINDOW_FRACTION;
         state.grounded = false;
@@ -275,8 +295,13 @@ export class Simulation {
           }
         } else {
           state.angularVelocity *= RELEASE_DAMPING_PER_STEP;
-          if (Math.abs(normalizeAngle(state.angle)) < 0.55) {
-            state.angularVelocity += -normalizeAngle(state.angle) * 0.35 * dt;
+          // Aero stabilization: after a vertical-run launch the car slowly
+          // settles toward level so a passive descent stays survivable but
+          // lands sloppy — precise orientation is still the player's job.
+          const levelingWindow = this.verticalRunArmed ? 1.7 : 0.55;
+          const levelingGain = this.verticalRunArmed ? 2.4 : 0.35;
+          if (Math.abs(normalizeAngle(state.angle)) < levelingWindow) {
+            state.angularVelocity += -normalizeAngle(state.angle) * levelingGain * dt;
           }
         }
         state.angle += state.angularVelocity * dt;
@@ -305,6 +330,43 @@ export class Simulation {
       this.events.push({ type: 'milestone' });
     }
     this.previousHeld = held;
+  }
+
+  private stepVerticalRun(previous: Surface | null, surface: Surface | null, dt: number): void {
+    const state = this.state;
+    if (surface?.segment.kind === 'vramp') {
+      if (previous?.segment.kind !== 'vramp') {
+        // Suction grabs the wall: top the fan up so the meter shows it working.
+        state.fan = max(state.fan, 60);
+        this.events.push({ type: 'verticalSuction' });
+      }
+      // Net drain while climbing (grounded refill was already applied above).
+      state.fan = max(0, state.fan - (VRAMP_FAN_DRAIN + FAN_GROUNDED_REFILL) * dt);
+      const segment = surface.segment;
+      const t = (state.x - segment.x0) / (segment.x1 - segment.x0);
+      if (t >= 0.72 && this.thrustersArmedAt !== segment.x0) {
+        this.thrustersArmedAt = segment.x0;
+        this.events.push({ type: 'thrustersArmed' });
+      }
+      state.fanRailVisible = true;
+      return;
+    }
+    const ahead = this.course.verticalRunsInRange(state.x, state.x + state.speed * 2.6)
+      .find((run) => run.lipX !== this.announcedVRunLip && state.x >= run.x0);
+    if (ahead) {
+      this.announcedVRunLip = ahead.lipX;
+      this.events.push({ type: 'verticalRunApproach' });
+    }
+  }
+
+  private settleVerticalRun(): void {
+    if (!this.verticalRunArmed) return;
+    this.verticalRunArmed = false;
+    const state = this.state;
+    const points = Math.floor(VERTICAL_RUN_BONUS * comboMultiplier(state.combo) + 0.5);
+    state.stats.score += points;
+    state.stats.stunts += 1;
+    this.events.push({ type: 'verticalRunLanded', points });
   }
 
   private wheelPoint(longitudinalOffset: number): WheelPoint {
@@ -600,6 +662,7 @@ export class Simulation {
 
     state.grounded = true;
     state.vy = 0;
+    this.settleVerticalRun();
     if (recovering) {
       state.angle = surface.slope;
       state.angularVelocity = 0;
@@ -685,10 +748,14 @@ export class Simulation {
           this.events.push({ type: 'nearMiss', hazardId: hazard.id });
         }
       } else {
-        const distancePast = state.x - (hazard.x + hazard.width);
         const height = hazard.kind === 'piston' ? pistonHeight(hazard, state.elapsed) : hazard.height;
-        const clearance = hazard.baseY - height - this.bodyBottom();
-        if (distancePast >= 0 && distancePast < NEAR_MISS_CLEARANCE && clearance >= 0 && clearance < NEAR_MISS_CLEARANCE) {
+        const missed = obstacleBoxes(hazard, height).some((box) => {
+          const distancePast = state.x - box.x1;
+          const clearance = box.top - this.bodyBottom();
+          return distancePast >= 0 && distancePast < NEAR_MISS_CLEARANCE
+            && clearance >= 0 && clearance < NEAR_MISS_CLEARANCE;
+        });
+        if (missed) {
           state.nearMissIds.push(hazard.id);
           state.energy = min(ENERGY_MAX, state.energy + 10);
           awardNearMiss(state.stats, state.combo);
@@ -704,16 +771,16 @@ export class Simulation {
     for (const hazard of hazards) {
       if (hazard.kind === 'gap') continue;
       const height = hazard.kind === 'piston' ? pistonHeight(hazard, state.elapsed) : hazard.height;
-      const top = hazard.baseY - height;
-      const right = hazard.x + hazard.width;
-      for (const circle of this.bodyCircles()) {
-        const nearestX = clamp(circle.x, hazard.x, right);
-        const nearestY = clamp(circle.y, top, hazard.baseY);
-        const dx = circle.x - nearestX;
-        const dy = circle.y - nearestY;
-        if (dx * dx + dy * dy < circle.radius * circle.radius) {
-          this.crash('obstacle');
-          return;
+      for (const box of obstacleBoxes(hazard, height)) {
+        for (const circle of this.bodyCircles()) {
+          const nearestX = clamp(circle.x, box.x0, box.x1);
+          const nearestY = clamp(circle.y, box.top, box.base);
+          const dx = circle.x - nearestX;
+          const dy = circle.y - nearestY;
+          if (dx * dx + dy * dy < circle.radius * circle.radius) {
+            this.crash('obstacle');
+            return;
+          }
         }
       }
     }

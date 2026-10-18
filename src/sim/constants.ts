@@ -48,6 +48,14 @@ export const GAP_FALL_LIMIT = 140;
 export const NEAR_MISS_CLEARANCE = 22;
 export const AIRBORNE_FALL_LIMIT = 900;
 export const HAZARD_RECOVERY_SECONDS = 0.35;
+/** Compressed-air thruster impulse added to the car's surface-normal momentum at the top of a vertical run. */
+export const VERTICAL_LAUNCH_BOOST = -500;
+/** Fan drain rate while suction holds the car to the vertical-run wall. */
+export const VRAMP_FAN_DRAIN = 40;
+/** Base score for landing a vertical run safely past the pit. */
+export const VERTICAL_RUN_BONUS = 1500;
+/** Earliest run time (seconds) at which a vertical run may appear. */
+export const VRAMP_FIRST_AT_SECONDS = 45;
 
 // Quadratic ease-out front-loads the 430→980 speed ramp over 90 seconds.
 export function speedAtTime(time: number): number {

@@ -392,6 +392,10 @@ export class GameUI {
             : event.type === 'suctionEngage' ? 'SUCTION ENGAGED'
               : event.type === 'railRecovery' ? 'AUTO-RECOVER'
               : event.type === 'thrusterBurst' ? 'THRUSTER BURST'
+              : event.type === 'verticalRunApproach' ? 'VERTICAL RUN'
+              : event.type === 'verticalSuction' ? 'SUCTION ENGAGED'
+              : event.type === 'thrustersArmed' ? 'THRUSTERS ARMED'
+              : event.type === 'verticalRunLanded' ? 'VERTICAL RUN +1500'
                 : event.type === 'crash' ? 'RUN ENDED' : '');
       if (!label) return;
       this.addFeedback(label, landingFeedback?.perfect ?? false);

@@ -46,4 +46,15 @@ if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) {
       return scene?.getDebugSnapshot() ?? null;
     },
   });
+  Object.defineProperty(window, '__roadstronautDebug', {
+    configurable: true,
+    get: () => {
+      const scene = game.scene.getScene('game') as GameScene | undefined;
+      if (!scene) return null;
+      return {
+        teleport: (x: number) => scene.debugTeleport(x),
+        landmarks: () => scene.debugCourseLandmarks(),
+      };
+    },
+  });
 }

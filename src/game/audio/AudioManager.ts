@@ -165,6 +165,10 @@ export class AudioManager {
       else if (event.type === 'flipComplete') this.play('flip');
       else if (event.type === 'land') this.play(event.quality === 'perfect' ? 'perfect' : 'land');
       else if (event.type === 'nearMiss') this.play('nearMiss');
+      else if (event.type === 'verticalSuction') this.play('flip');
+      else if (event.type === 'thrustersArmed') this.play('combo');
+      else if (event.type === 'verticalLaunch') { this.play('superLaunch'); this.play('rocket'); }
+      else if (event.type === 'verticalRunLanded') this.play('perfect');
       else if (event.type === 'comboUp') this.play('combo');
       else if (event.type === 'crash') this.play('crash');
     }
