@@ -147,6 +147,25 @@ test('About panel opens and closes with the full disclaimer', async ({ page }) =
   await expect(page.locator('#menu-screen')).toBeVisible();
 });
 
+test('paint selector toggles coral and restores the prototype paint', async ({ page }) => {
+  await page.addInitScript(() => localStorage.removeItem('thrustshift.paint'));
+  await page.goto('/');
+  const paintButton = page.locator('#menu-screen [data-action="paint"]');
+
+  try {
+    await expect(paintButton).toHaveText('PAINT · PROTOTYPE');
+    await paintButton.click();
+    await expect(paintButton).toHaveText('PAINT · CORAL');
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('thrustshift.paint'))).toBe('coral');
+
+    await paintButton.click();
+    await expect(paintButton).toHaveText('PAINT · PROTOTYPE');
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('thrustshift.paint'))).toBe('prototype');
+  } finally {
+    await page.evaluate(() => localStorage.removeItem('thrustshift.paint'));
+  }
+});
+
 test('iPhone-sized portrait and landscape touch play do not scroll the page', async ({ browser }) => {
   await mkdir(screens, { recursive: true });
   const context = await browser.newContext({ ...devices['iPhone 13'] });
