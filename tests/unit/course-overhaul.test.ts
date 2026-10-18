@@ -5,7 +5,7 @@ import {
   distanceAtTime, speedAtTime, timeAtDistance,
 } from '../../src/sim/constants';
 import { atan2, sin } from '../../src/sim/detmath';
-import { BASE_Y, createCourse, type Course, type Hazard } from '../../src/sim/course';
+import { BASE_Y, createCourse, pistonHeight, type Course, type Hazard } from '../../src/sim/course';
 import { Simulation } from '../../src/sim/simulation';
 
 const DISTANCE_150_SECONDS = distanceAtTime(150);
@@ -37,6 +37,11 @@ function checkFairness(seed: number): void {
     } else {
       const plainJumpApex = JUMP_VELOCITY * JUMP_VELOCITY / (2 * GRAVITY);
       expect(hazard.height, hazard.id).toBeLessThanOrEqual(plainJumpApex * 0.65);
+      if (hazard.kind === 'beam') expect(hazard.height).toBe(26);
+      if (hazard.kind === 'piston') {
+        expect(hazard.motion?.period).toBeGreaterThanOrEqual(1.2);
+        expect(hazard.motion?.period).toBeLessThanOrEqual(2);
+      }
     }
     if (previous) {
       expect(hazard.x - previous.x - previous.width, `${previous.id} → ${hazard.id}`).toBeGreaterThanOrEqual(
@@ -116,9 +121,45 @@ function lookaheadJump(simulation: Simulation): boolean {
   const hazards = simulation.course.hazardsAhead(state.x - 50, state.speed * 2 + 100);
   const next = hazards.find((hazard) => hazard.x + hazard.width >= state.x);
   if (!next) return false;
+  if (next.kind === 'beam') return false;
   const lead = next.kind === 'gap' ? next.safeJumpReach * 0.08 : next.safeJumpReach * 0.35;
   const targetX = next.x - lead;
   return state.x < targetX && state.x + state.speed * FIXED_DT >= targetX;
+}
+
+function survivesLookahead(simulation: Simulation, pressNow: boolean): boolean {
+  const branch = simulation.clone();
+  for (let tick = 0; tick < Math.ceil(1.5 / FIXED_DT) && !branch.state.crashed; tick += 1) {
+    branch.step(tick === 0 ? pressNow : lookaheadJump(branch));
+  }
+  return !branch.state.crashed;
+}
+
+function searchBotInput(simulation: Simulation): boolean {
+  const { state } = simulation;
+  if (!state.grounded) return false;
+  const next = simulation.course.hazardsAhead(state.x - CAR_LENGTH / 2, state.speed * 1.5 + CAR_LENGTH)
+    .find((hazard) => hazard.x + hazard.width >= state.x);
+  if (!next || next.kind === 'beam') return false;
+  const lead = next.kind === 'gap' ? next.safeJumpReach * 0.08 : next.safeJumpReach * 0.35;
+  const targetX = next.x - lead;
+  if (state.x >= targetX || state.x + state.speed * 0.05 < targetX) return false;
+  const noPressSurvives = survivesLookahead(simulation, false);
+  const pressSurvives = survivesLookahead(simulation, true);
+  if (pressSurvives !== noPressSurvives) return pressSurvives;
+  return true;
+}
+
+function runSearchBot(seed: number, seconds: number): Simulation {
+  const simulation = new Simulation(seed);
+  const ticks = Math.ceil(seconds / FIXED_DT);
+  let held = false;
+  for (let tick = 0; tick < ticks && !simulation.state.crashed; tick += 1) {
+    if (tick % 6 === 0) held = searchBotInput(simulation);
+    simulation.step(held);
+    held = false;
+  }
+  return simulation;
 }
 
 function runNoFlipBot(seed: number, seconds: number): Simulation {
@@ -367,6 +408,8 @@ describe('contiguous deterministic course generator', () => {
       if (segments.some((segment) => segment.kind === 'slope')) found.add('hill');
       if (segments.some((segment) => segment.kind === 'kicker')) found.add('kicker');
       if (hazards.some((hazard) => hazard.kind !== 'gap')) found.add('single obstacle');
+      if (hazards.some((hazard) => hazard.kind === 'beam')) found.add('beam');
+      if (hazards.some((hazard) => hazard.kind === 'piston')) found.add('piston');
       if (hazards.some((hazard) => hazard.kind === 'gap')) found.add('gap');
       if (segments.some((segment) => segment.kind === 'launch')) found.add('launch');
       if (segments.some((segment, index) => segment.kind === 'launch' && segments[index + 1]?.kind === 'gap')) {
@@ -377,9 +420,11 @@ describe('contiguous deterministic course generator', () => {
       for (let index = 0; index < hazards.length - 1; index += 1) {
         const current = hazards[index];
         const next = hazards[index + 1];
-        const adjacent = next.x - current.x - current.width <= current.minSpacing + 1;
+        const adjacent = next.x - current.x - current.width <= current.minSpacing * 1.15 + 1;
         if (adjacent && current.kind !== 'gap' && next.kind !== 'gap') found.add('double');
         if (adjacent && current.kind !== 'gap' && next.kind === 'gap') found.add('obstacle-gap');
+        if (adjacent && current.kind === 'gap' && next.kind !== 'gap') found.add('gap-obstacle');
+        if (adjacent && current.kind === 'barrier' && next.kind === 'beam') found.add('barrier-beam');
         if (adjacent && current.kind === 'gap' && next.kind === 'gap') {
           const between = segments.filter((segment) => segment.x0 >= current.x + current.width && segment.x1 <= next.x);
           if (between.some((segment) => segment.kind === 'platform')) found.add('narrow landing');
@@ -387,13 +432,85 @@ describe('contiguous deterministic course generator', () => {
       }
     }
     expect([...found].sort()).toEqual([
-      'double', 'flat', 'gap', 'hill', 'kicker', 'launch', 'launch over gap',
-      'narrow landing', 'obstacle-gap', 'platform', 'quarter', 'single obstacle',
+      'barrier-beam', 'beam', 'double', 'flat', 'gap', 'gap-obstacle', 'hill', 'kicker',
+      'launch', 'launch over gap', 'narrow landing', 'obstacle-gap', 'piston', 'platform',
+      'quarter', 'single obstacle',
     ]);
   }, 120_000);
 });
 
 describe('procedural gameplay fairness', () => {
+  it('keeps a 50ms lookahead search bot alive for 150 seconds on 200 seeds', () => {
+    const survivals = Array.from({ length: 200 }, (_, seed) => runSearchBot(seed, 150).state.elapsed)
+      .sort((a, b) => a - b);
+    const minSurvival = survivals[0]!;
+    const p10Survival = survivals[Math.floor(survivals.length * 0.1)]!;
+    const medianSurvival = survivals[Math.floor(survivals.length / 2)]!;
+    console.info(
+      `150s search bot survival: min ${minSurvival.toFixed(2)}s, `
+      + `p10 ${p10Survival.toFixed(2)}s, median ${medianSurvival.toFixed(2)}s`,
+    );
+    expect(minSurvival).toBeGreaterThanOrEqual(150);
+  }, 120_000);
+
+  it('keeps pistons deterministic and within their configured travel', () => {
+    const hazard = Array.from({ length: 100 }, (_, seed) => (
+      createCourse(seed).hazardsAhead(0, distanceAtTime(90)).find((item) => item.kind === 'piston')
+    )).find((item): item is Hazard => item !== undefined);
+    expect(hazard).toBeDefined();
+    expect(hazard?.motion).toBeDefined();
+    expect(hazard!.motion!.phase).toBeGreaterThanOrEqual(0);
+    expect(hazard!.motion!.phase).toBeLessThan(1);
+    for (let tick = 0; tick <= 240; tick += 1) {
+      const elapsed = tick / 60;
+      const height = pistonHeight(hazard!, elapsed);
+      expect(height).toBeGreaterThanOrEqual(0);
+      expect(height).toBeLessThanOrEqual(hazard!.height);
+      expect(pistonHeight(hazard!, elapsed)).toBe(height);
+    }
+    expect(pistonHeight(hazard!, hazard!.motion!.period)).toBeCloseTo(
+      pistonHeight(hazard!, 0),
+      10,
+    );
+  });
+
+  it('passes under a beam without input and crashes a just-before jump', () => {
+    const candidate = Array.from({ length: 100 }, (_, seed) => {
+      const course = createCourse(seed);
+      const beam = course.hazardsAhead(0, distanceAtTime(45)).find((item) => item.kind === 'beam');
+      return beam ? { seed, beam } : undefined;
+    }).find((item) => item !== undefined)!;
+
+    const trial = (jump: boolean): Simulation => {
+      const simulation = new Simulation(candidate.seed);
+      const target = candidate.beam.x - candidate.beam.safeJumpReach * 0.08;
+      const startX = jump ? target - 0.1 : candidate.beam.x - CAR_LENGTH;
+      const surface = simulation.course.surfaceAt(startX)!;
+      const speed = speedAtTime(timeAtDistance(startX));
+      simulation.state.x = startX;
+      simulation.state.y = surface.y - 20;
+      simulation.state.speed = speed;
+      simulation.state.vx = speed;
+      simulation.state.elapsed = timeAtDistance(startX);
+      (simulation as unknown as { previousX: number }).previousX = startX;
+      for (let tick = 0; tick < 100 && !simulation.state.crashed; tick += 1) {
+        const press = jump && simulation.state.grounded
+          && simulation.state.x < target
+          && simulation.state.x + simulation.state.speed * FIXED_DT >= target;
+        simulation.step(press);
+        if (!jump && simulation.state.x > candidate.beam.x + candidate.beam.width + CAR_LENGTH) break;
+      }
+      return simulation;
+    };
+
+    const pass = trial(false);
+    expect(pass.state.crashed).toBe(false);
+    expect(pass.state.x).toBeGreaterThan(candidate.beam.x + candidate.beam.width);
+    const jump = trial(true);
+    expect(jump.state.crashed).toBe(true);
+    expect(jump.state.crashReason).toBe('obstacle');
+  });
+
   it('builds reachable suction rails over a safe flat route', () => {
     for (let seed = 0; seed < 20; seed += 1) {
       const course = createCourse(seed);

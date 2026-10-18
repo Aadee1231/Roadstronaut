@@ -51,6 +51,23 @@ describe('scoring', () => {
 });
 
 describe('simulation input and replay', () => {
+  it('clones complete simulation state while sharing the deterministic course', () => {
+    const original = new Simulation(17);
+    for (let tick = 0; tick < 24; tick += 1) original.step(tick === 0);
+    const clone = original.clone();
+    expect(clone.course).toBe(original.course);
+    expect(clone.state).not.toBe(original.state);
+    expect(clone.state.stats).not.toBe(original.state.stats);
+    expect(clone.state.nearMissIds).not.toBe(original.state.nearMissIds);
+    for (let tick = 0; tick < 240 && !original.state.crashed; tick += 1) {
+      const held = tick % 18 < 6;
+      original.step(held);
+      clone.step(held);
+      expect(clone.state).toEqual(original.state);
+      expect(clone.events).toEqual(original.events);
+    }
+  });
+
   it('does not rotate on the press that jumps, but accepts a fresh airborne press', () => {
     const simulation = new Simulation(4);
     simulation.step(true);

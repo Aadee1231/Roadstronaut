@@ -10,7 +10,9 @@ import {
   SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
 } from './constants';
-import { BASE_Y, createCourse, type CeilingSegment, type Course, type Surface } from './course';
+import {
+  BASE_Y, createCourse, pistonHeight, type CeilingSegment, type Course, type Surface,
+} from './course';
 import { atan2, clamp, cos, max, min, normalizeAngle, sin } from './detmath';
 import { awardLanding, awardNearMiss, createRunStats, type LandingQuality, type RunStats } from './scoring';
 
@@ -118,6 +120,19 @@ export class Simulation {
       stats: createRunStats(),
     };
     if (surface) this.syncGroundPose(surface);
+  }
+
+  clone(): Simulation {
+    const clonedState: SimulationState = {
+      ...this.state,
+      nearMissIds: [...this.state.nearMissIds],
+      stats: { ...this.state.stats },
+    };
+    return Object.assign(Object.create(Simulation.prototype), this, {
+      state: clonedState,
+      events: [...this.events],
+      previousWheelBottoms: [...this.previousWheelBottoms] as [number, number],
+    }) as Simulation;
   }
 
   step(held: boolean): void {
@@ -502,7 +517,8 @@ export class Simulation {
         }
       } else {
         const distancePast = state.x - (hazard.x + hazard.width);
-        const clearance = hazard.baseY - hazard.height - this.bodyBottom();
+        const height = hazard.kind === 'piston' ? pistonHeight(hazard, state.elapsed) : hazard.height;
+        const clearance = hazard.baseY - height - this.bodyBottom();
         if (distancePast >= 0 && distancePast < NEAR_MISS_CLEARANCE && clearance >= 0 && clearance < NEAR_MISS_CLEARANCE) {
           state.nearMissIds.push(hazard.id);
           state.energy = min(ENERGY_MAX, state.energy + 10);
@@ -518,7 +534,8 @@ export class Simulation {
     const hazards = this.course.hazardsAhead(state.x - CAR_LENGTH / 2, CAR_LENGTH);
     for (const hazard of hazards) {
       if (hazard.kind === 'gap') continue;
-      const top = hazard.baseY - hazard.height;
+      const height = hazard.kind === 'piston' ? pistonHeight(hazard, state.elapsed) : hazard.height;
+      const top = hazard.baseY - height;
       const right = hazard.x + hazard.width;
       for (const circle of this.bodyCircles()) {
         const nearestX = clamp(circle.x, hazard.x, right);

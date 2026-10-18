@@ -21,14 +21,17 @@ export interface CourseSegment {
 
 export interface Hazard {
   id: string;
-  kind: 'barrier' | 'pylon' | 'crate' | 'gap';
+  kind: HazardKind;
   x: number;
   width: number;
   height: number;
   baseY: number;
   safeJumpReach: number;
   minSpacing: number;
+  motion?: { period: number; phase: number };
 }
+
+export type HazardKind = 'barrier' | 'pylon' | 'crate' | 'gap' | 'beam' | 'piston';
 
 export interface CeilingSegment {
   id: string;
@@ -43,7 +46,16 @@ export interface Surface {
   segment: CourseSegment;
 }
 
-type Pattern = 'hill' | 'kicker' | 'obstacle' | 'gap' | 'platform' | 'double' | 'obstacle-gap' | 'narrow';
+export function pistonHeight(hazard: Hazard, elapsed: number): number {
+  if (hazard.kind !== 'piston' || !hazard.motion) return hazard.height;
+  const cycle = elapsed / hazard.motion.period + hazard.motion.phase;
+  const wave = sin(cycle * Math.PI * 2 - Math.PI / 2);
+  return clamp((wave + 1) * hazard.height / 2, 0, hazard.height);
+}
+
+type Pattern =
+  | 'hill' | 'kicker' | 'obstacle' | 'gap' | 'platform' | 'double'
+  | 'obstacle-gap' | 'gap-obstacle' | 'barrier-beam' | 'narrow';
 type WeightedPattern = readonly [Pattern, number];
 
 const PLAIN_AIRTIME = -2 * JUMP_VELOCITY / GRAVITY;
@@ -163,6 +175,9 @@ export class Course {
         ['hill', 10], ['obstacle', 25], ['gap', 21], ['platform', 26], ['kicker', 8],
       ];
       if (time >= 45) patterns.push(['obstacle-gap', 10]);
+      if (time >= 30) {
+        patterns.push(['barrier-beam', 12], ['gap-obstacle', 8]);
+      }
       return this.weightedPattern(patterns);
     }
     return this.weightedPattern([
@@ -220,6 +235,12 @@ export class Course {
       case 'obstacle-gap':
         this.generateObstacleGap();
         break;
+      case 'gap-obstacle':
+        this.generateGapObstacle();
+        break;
+      case 'barrier-beam':
+        this.generateBarrierBeam();
+        break;
       case 'narrow':
         this.generateNarrowLanding();
         break;
@@ -244,10 +265,32 @@ export class Course {
     this.appendSegment('kicker', speed * this.rng.range(0.34, 0.42), startY - rise);
     this.appendFlat(speed * 0.16);
     this.appendSegment('slope', speed * 0.22, startY);
+    this.protectedUntil = this.x + speed * HAZARD_RECOVERY_SECONDS;
   }
 
-  private obstacleSpec(tiny = false): { kind: Hazard['kind']; width: number; height: number } {
+  private obstacleSpec(tiny = false): {
+    kind: HazardKind;
+    width: number;
+    height: number;
+    motion?: { period: number; phase: number };
+  } {
     const kinds: readonly Hazard['kind'][] = ['barrier', 'pylon', 'crate'];
+    const time = timeAtDistance(this.x);
+    if (time >= 30) {
+      const roll = this.rng.next();
+      if (roll < 0.3) {
+        const apex = JUMP_VELOCITY * JUMP_VELOCITY / (2 * GRAVITY);
+        return {
+          kind: 'piston',
+          width: this.rng.range(48, 62),
+          height: this.rng.range(0.35, 0.6) * apex,
+          motion: { period: this.rng.range(1.2, 2), phase: this.rng.next() },
+        };
+      }
+      if (roll < 0.55) return { kind: 'beam', width: this.rng.range(90, 120), height: 26 };
+    } else if (time >= 15 && this.rng.next() < 0.55) {
+      return { kind: 'beam', width: this.rng.range(90, 120), height: 26 };
+    }
     const kind = kinds[this.rng.int(0, kinds.length)];
     const width = this.rng.range(42, 58);
     const apex = JUMP_VELOCITY * JUMP_VELOCITY / (2 * GRAVITY);
@@ -257,16 +300,21 @@ export class Course {
     return { kind, width, height: min(height, apex * 0.65) };
   }
 
-  private addObstacleAt(x: number, baseY: number, obstacle: { kind: Hazard['kind']; width: number; height: number }): Hazard {
+  private addObstacleAt(
+    x: number,
+    surfaceY: number,
+    obstacle: { kind: HazardKind; width: number; height: number; motion?: { period: number; phase: number } },
+  ): Hazard {
     const hazard: Hazard = {
       id: `hazard-${this.hazards.length}`,
       kind: obstacle.kind,
       x,
       width: obstacle.width,
       height: obstacle.height,
-      baseY,
+      baseY: obstacle.kind === 'beam' ? surfaceY - 58 : surfaceY,
       safeJumpReach: this.reachAtX(x),
       minSpacing: this.spacingAtX(x),
+      ...(obstacle.motion ? { motion: { ...obstacle.motion } } : {}),
     };
     this.hazards.push(hazard);
     return hazard;
@@ -342,6 +390,32 @@ export class Course {
     this.appendSegment('gap', width, baseY);
     this.addGapAt(gapX, width, baseY);
     this.appendFlat(this.speedAtX(this.x) * 0.28);
+  }
+
+  private generateGapObstacle(): void {
+    const speed = this.speedAtX(this.x);
+    this.generateGap();
+    const obstacle = this.obstacleSpec();
+    const hazardX = this.nextHazardX(this.x + speed * 0.2);
+    this.appendFlat(hazardX - this.x);
+    const baseY = this.y;
+    this.addObstacleAt(hazardX, baseY, obstacle);
+    this.appendFlat(obstacle.width + speed * 0.3);
+  }
+
+  private generateBarrierBeam(): void {
+    const speed = this.speedAtX(this.x);
+    const apex = JUMP_VELOCITY * JUMP_VELOCITY / (2 * GRAVITY);
+    const barrier = this.addObstacleAt(
+      this.nextHazardX(this.x + speed * 0.2),
+      this.y,
+      { kind: 'barrier', width: 50, height: this.rng.range(0.22, 0.38) * apex },
+    );
+    this.appendFlat(barrier.x - this.x + barrier.width);
+    const beamX = this.nextHazardX(barrier.x + barrier.width + barrier.minSpacing);
+    this.appendFlat(beamX - this.x);
+    const beam = this.addObstacleAt(beamX, this.y, { kind: 'beam', width: 100, height: 26 });
+    this.appendFlat(beam.width + speed * 0.3);
   }
 
   private generateNarrowLanding(): void {
