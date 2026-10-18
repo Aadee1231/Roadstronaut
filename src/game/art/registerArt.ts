@@ -33,6 +33,7 @@ function radial(ctx: CanvasRenderingContext2D, size: number, stops: [number, str
 export function registerArt(scene: Phaser.Scene): void {
   const s = CAR_TEXTURE_SCALE;
   canvasTexture(scene, 'car-body', CAR_ART.width * s, CAR_ART.height * s, (ctx) => drawCarBody(ctx, s));
+  canvasTexture(scene, 'car-body-coral', CAR_ART.width * s, CAR_ART.height * s, (ctx) => drawCarBody(ctx, s, 'coral'));
   canvasTexture(scene, 'car-wheel', 64 * s, 64 * s, (ctx) => drawWheel(ctx, s));
   canvasTexture(scene, 'thruster-flame', 128, 48, (ctx, w, h) => {
     const g = ctx.createLinearGradient(w, 0, 0, 0);
