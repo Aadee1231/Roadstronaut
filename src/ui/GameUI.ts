@@ -44,6 +44,25 @@ function safeNickname(value: string): string {
   return /^[A-Za-z0-9 _.-]{3,16}$/.test(cleaned) ? cleaned : '';
 }
 
+export function landingFeedbackLabels(
+  events: readonly { type: string; quality?: string; flips?: number }[],
+  hard = events.some((event) => event.type === 'hardLanding'),
+): { eventIndex: number; label: string; perfect: boolean }[] {
+  const labels: { eventIndex: number; label: string; perfect: boolean }[] = [];
+  events.forEach((event, eventIndex) => {
+    if (event.type !== 'land') return;
+    const flipName = event.flips === 2 ? 'DOUBLE FLIP' : event.flips === 3 ? 'TRIPLE FLIP' : event.flips ? 'FRONT FLIP' : '';
+    labels.push({
+      eventIndex,
+      label: hard
+        ? `${flipName ? `${flipName} · ` : ''}HARD LANDING`
+        : event.quality === 'perfect' ? 'PERFECT LANDING' : flipName || 'CLEAN LANDING',
+      perfect: !hard && event.quality === 'perfect',
+    });
+  });
+  return labels;
+}
+
 export class GameUI {
   private readonly playerId = getPlayerId();
   private nickname = storageGet(KEYS.nickname, 'NeonDriver');
@@ -354,26 +373,28 @@ export class GameUI {
   }
 
   showEvents(events: readonly { type: string; quality?: string; flips?: number }[]): void {
-    for (const event of events) {
+    const hard = events.some((event) => event.type === 'hardLanding');
+    const landingLabels = new Map(landingFeedbackLabels(events, hard).map((feedback) => [feedback.eventIndex, feedback]));
+    events.forEach((event, eventIndex) => {
       if (event.type === 'milestone') {
         this.milestoneCount += 1;
         if (this.milestoneCount % 3 === 0) {
           const messages = ['MISSION CONTROL: FLIGHT PATH GREEN', 'TELEMETRY LOOKS GOOD, DRIVER', 'TRACKING A CLEAN BURN', 'BOOST WINDOW CONFIRMED'];
           this.addFeedback(messages[(this.milestoneCount / 3 - 1) % messages.length] ?? messages[0]);
         }
-        continue;
+        return;
       }
-      const label = event.type === 'land'
-        ? event.quality === 'perfect' ? 'PERFECT LANDING' : event.flips === 2 ? 'DOUBLE FLIP' : event.flips === 3 ? 'TRIPLE FLIP' : event.flips ? 'FRONT FLIP' : 'CLEAN LANDING'
-        : event.type === 'nearMiss' ? 'NEAR MISS'
+      if (event.type === 'hardLanding') return;
+      const landingFeedback = landingLabels.get(eventIndex);
+      const label = landingFeedback?.label
+        ?? (event.type === 'nearMiss' ? 'NEAR MISS'
           : event.type === 'superLaunch' ? 'SUPER LAUNCH'
-            : event.type === 'hardLanding' ? 'HARD LANDING'
-              : event.type === 'suctionEngage' ? 'SUCTION ENGAGED'
-                : event.type === 'thrusterBurst' ? 'THRUSTER BURST'
-                  : event.type === 'crash' ? 'RUN ENDED' : '';
-      if (!label) continue;
-      this.addFeedback(label, event.quality === 'perfect');
-    }
+            : event.type === 'suctionEngage' ? 'SUCTION ENGAGED'
+              : event.type === 'thrusterBurst' ? 'THRUSTER BURST'
+                : event.type === 'crash' ? 'RUN ENDED' : '');
+      if (!label) return;
+      this.addFeedback(label, landingFeedback?.perfect ?? false);
+    });
   }
 
   private addFeedback(label: string, perfect = false): void {
