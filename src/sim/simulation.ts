@@ -76,6 +76,8 @@ export const WHEEL_VERTICAL_OFFSET = CAR_HEIGHT * 0.32;
 const BODY_RADIUS = CAR_HEIGHT * 0.3;
 /** exp(-7 * FIXED_DT) as a literal so replays never depend on an engine's Math.exp. */
 const RELEASE_DAMPING_PER_STEP = 0.94333544987349216;
+/** Distance short of a flip boundary where a momentum-finished flip stops thrusting and coasts in, like a well-timed release. */
+const FLIP_COAST_RADIANS = 1.15;
 
 export class Simulation {
   readonly course: Course;
@@ -84,6 +86,8 @@ export class Simulation {
   private previousHeld = false;
   private airbornePressEligible = false;
   private flipRotation = 0;
+  private freeFinishUsed = false;
+  private unpoweredFlipLimit = 0;
   private previousX = 0;
   private previousWheelBottoms: [number, number] = [Number.NaN, Number.NaN];
   private rewardedLandingThisAirbornePhase = false;
@@ -192,6 +196,8 @@ export class Simulation {
         this.startRailPhaseAtTakeoff();
         state.flips = 0;
         this.flipRotation = 0;
+        this.freeFinishUsed = false;
+        this.unpoweredFlipLimit = 0;
         this.airbornePressEligible = false;
         this.rewardedLandingThisAirbornePhase = false;
         this.clearRailRecovery();
@@ -244,12 +250,29 @@ export class Simulation {
       if (this.recovering) {
         this.stepRailRecovery(dt);
       } else {
-        const canRotate = held && this.airbornePressEligible && state.energy >= ROTATION_ENERGY_PER_SECOND * dt;
+        // A flip that was started always finishes: while a flip is in progress
+        // the car keeps rotating even after the tank empties, then coasts the
+        // last stretch like a released press so it lands on the flip boundary.
+        // Only powered flips refund energy, so an empty tank can't chain flips.
+        const powered = state.energy >= ROTATION_ENERGY_PER_SECOND * dt;
+        if (powered) {
+          // Boundary the in-progress flip is heading for; frozen while unpowered
+          // so momentum may finish that flip and nothing more.
+          this.unpoweredFlipLimit = (Math.floor(this.flipRotation / (Math.PI * 2)) + 1) * Math.PI * 2;
+        }
+        const freeFinishRemaining = this.unpoweredFlipLimit - this.flipRotation;
+        const freeAccel = freeFinishRemaining > FLIP_COAST_RADIANS;
+        const canRotate = held && this.airbornePressEligible && (powered || freeAccel);
         if (canRotate) {
-          state.rotating = true;
+          state.rotating = powered;
           state.angularVelocity = min(MAX_ANGULAR_SPEED, state.angularVelocity + ROTATION_ACCEL * dt);
-          state.energy = max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
-          if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
+          if (powered) {
+            state.energy = max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
+            if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
+          } else {
+            if (!this.freeFinishUsed) this.events.push({ type: 'energyEmpty' });
+            this.freeFinishUsed = true;
+          }
         } else {
           state.angularVelocity *= RELEASE_DAMPING_PER_STEP;
           if (Math.abs(normalizeAngle(state.angle)) < 0.55) {
@@ -260,7 +283,11 @@ export class Simulation {
         this.flipRotation += max(0, state.angularVelocity * dt);
         const fullFlips = Math.floor(this.flipRotation / (Math.PI * 2));
         if (fullFlips > state.flips) {
-          state.energy = min(ENERGY_MAX, state.energy + (fullFlips - state.flips) * 10);
+          // Only a fully powered flip refunds energy; a momentum-finished flip pays nothing back.
+          if (!this.freeFinishUsed) {
+            state.energy = min(ENERGY_MAX, state.energy + (fullFlips - state.flips) * 10);
+          }
+          this.freeFinishUsed = false;
           state.flips = fullFlips;
           this.events.push({ type: 'flipComplete', count: state.flips });
         }
@@ -335,6 +362,8 @@ export class Simulation {
     state.airtime = 0;
     state.flips = 0;
     this.flipRotation = 0;
+    this.freeFinishUsed = false;
+    this.unpoweredFlipLimit = 0;
     this.airbornePressEligible = false;
     this.rewardedLandingThisAirbornePhase = false;
     this.clearRailRecovery();
@@ -416,6 +445,8 @@ export class Simulation {
     this.state.recovering = true;
     this.state.flips = 0;
     this.flipRotation = 0;
+    this.freeFinishUsed = false;
+    this.unpoweredFlipLimit = 0;
     this.events.push(hardSnap
       ? { type: 'railRecovery', hardSnap: true }
       : { type: 'railRecovery' });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BURST_COOLDOWN, BURST_COUNT_PER_AIR_PHASE, CRASH_IMPACT, GRAVITY, HARD_IMPACT,
-  JUMP_VELOCITY, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, WHEEL_RADIUS,
+  JUMP_VELOCITY, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, SUPER_JUMP_VELOCITY, WHEEL_RADIUS,
   distanceAtTime, speedAtTime, timeAtDistance,
 } from '../../src/sim/constants';
 import { atan2, cos, normalizeAngle, sin } from '../../src/sim/detmath';
@@ -193,6 +193,30 @@ describe('simulation input and replay', () => {
     const inputs = Array.from({ length: 480 }, (_, index) => index % 70 < 4);
     expect(decodeInputLog(encodeInputLog(inputs))).toEqual(inputs);
     expect(replayRun(12, encodeInputLog(inputs))).toEqual(replayRun(12, inputs));
+  });
+
+  it('finishes an in-progress flip on momentum without refunding an empty tank', () => {
+    const simulation = new Simulation(7);
+    simulation.step(true);
+    simulation.step(false);
+    simulation.step(true);
+    simulation.state.vy = SUPER_JUMP_VELOCITY;
+    simulation.state.energy = 25;
+    let emptied = false;
+    let flipsAfterEmpty = 0;
+    let energyAtFreeComplete = -1;
+    for (let tick = 0; tick < 480 && !simulation.state.grounded && !simulation.state.crashed; tick += 1) {
+      simulation.step(true);
+      if (simulation.events.some((event) => event.type === 'energyEmpty')) emptied = true;
+      if (emptied && energyAtFreeComplete < 0 && simulation.events.some((event) => event.type === 'flipComplete')) {
+        flipsAfterEmpty += 1;
+        energyAtFreeComplete = simulation.state.energy;
+      }
+    }
+    expect(emptied).toBe(true);
+    expect(flipsAfterEmpty).toBeGreaterThanOrEqual(1);
+    expect(energyAtFreeComplete).toBeLessThan(1);
+    expect(simulation.state.stats.totalFlips).toBeGreaterThanOrEqual(1);
   });
 
   it('produces identical authoritative outcomes for the same seed and inputs', () => {
