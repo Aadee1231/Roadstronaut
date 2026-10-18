@@ -61,7 +61,7 @@ export class MemoryStore implements LeaderboardStore {
   private readonly limits = new Map<string, number>();
 
   async ensurePlayer(playerId: string): Promise<void> {
-    if (!this.players.has(playerId)) this.players.set(playerId, { id: playerId, nickname: 'NeonDriver' });
+    if (!this.players.has(playerId)) this.players.set(playerId, { id: playerId, nickname: 'Starman' });
   }
 
   async setNickname(playerId: string, nickname: string): Promise<void> {
@@ -121,7 +121,7 @@ export class MemoryStore implements LeaderboardStore {
     const entries = ranked.slice(0, 50).map((score, index) => ({
       rank: index + 1,
       playerId: score.playerId,
-      nickname: this.players.get(score.playerId)?.nickname ?? 'NeonDriver',
+      nickname: this.players.get(score.playerId)?.nickname ?? 'Starman',
       score: score.score,
       flips: score.flips,
       createdAt: score.createdAt,
@@ -160,7 +160,7 @@ export class SupabaseStore implements LeaderboardStore {
 
   async ensurePlayer(playerId: string): Promise<void> {
     const { error } = await this.client.from('players').upsert(
-      { id: playerId, nickname: 'NeonDriver' },
+      { id: playerId, nickname: 'Starman' },
       { onConflict: 'id', ignoreDuplicates: true },
     );
     throwOnError(error);

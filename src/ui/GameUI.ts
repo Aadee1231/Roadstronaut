@@ -65,7 +65,7 @@ export function landingFeedbackLabels(
 
 export class GameUI {
   private readonly playerId = getPlayerId();
-  private nickname = storageGet(KEYS.nickname, 'NeonDriver');
+  private nickname = storageGet(KEYS.nickname, 'Starman');
   private personalBest = Number(storageGet(KEYS.personalBest, '0')) || 0;
   private muted = storageGet(KEYS.muted) === 'true';
   private currentRunToken = '';
