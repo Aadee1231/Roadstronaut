@@ -6,7 +6,7 @@ import { devices, expect, test } from '@playwright/test';
 const screens = join(homedir(), 'artifacts', 'screens');
 
 async function waitForActiveRun(page: import('@playwright/test').Page): Promise<void> {
-  await page.waitForFunction(() => Boolean((window as Window & { __thrust?: { activeRun: boolean } }).__thrust?.activeRun));
+  await page.waitForFunction(() => Boolean((window as Window & { __roadstronaut?: { activeRun: boolean } }).__roadstronaut?.activeRun));
 }
 
 async function startRun(page: import('@playwright/test').Page): Promise<void> {
@@ -31,7 +31,7 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
 
   await page.goto('/');
   await expect(page.locator('#menu-screen')).toBeVisible();
-  await expect(page).toHaveTitle(/THRUSTSHIFT/);
+  await expect(page).toHaveTitle(/ROADSTRONAUT/);
   await page.screenshot({ path: join(screens, 'desktop-menu.png'), fullPage: true });
 
   await startRun(page);
@@ -40,21 +40,21 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
   await expect(canvas).toBeVisible();
   await page.keyboard.down('Space');
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { activeRun: boolean; held: boolean; state: { grounded: boolean } } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { activeRun: boolean; held: boolean; state: { grounded: boolean } } }).__roadstronaut;
     return game && game.activeRun && game.held && !game.state.grounded;
   });
   await page.keyboard.up('Space');
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { activeRun: boolean; held: boolean; state: { grounded: boolean } } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { activeRun: boolean; held: boolean; state: { grounded: boolean } } }).__roadstronaut;
     return game && game.activeRun && !game.held && !game.state.grounded;
   });
   await page.keyboard.down('Space');
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { activeRun: boolean; held: boolean; state: { angle: number } } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { activeRun: boolean; held: boolean; state: { angle: number } } }).__roadstronaut;
     return game && game.activeRun && game.held;
   }, undefined, { timeout: 2_000 });
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { state: { angle: number } } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { state: { angle: number } } }).__roadstronaut;
     return game && Math.abs(game.state.angle) > 0.5;
   }, undefined, { timeout: 5_000 });
   await page.screenshot({ path: join(screens, 'gameplay-midair-flip.png'), fullPage: true });
@@ -78,7 +78,7 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
   });
   await page.keyboard.down('Space');
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { activeRun: boolean; held: boolean } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { activeRun: boolean; held: boolean } }).__roadstronaut;
     return game?.activeRun && game.held;
   });
   await page.locator('#hud [data-action="pause"]').click();
@@ -86,11 +86,11 @@ test('desktop gameplay, verified submission, leaderboard, pause, restart, and mu
   await page.locator('#pause-screen [data-action="restart"]').click();
   await waitForActiveRun(page);
   await expect.poll(async () => Number((await page.locator('#score-value').textContent())?.replace(/\D/g, '') ?? 0)).toBeLessThan(100);
-  await expect.poll(() => page.evaluate(() => (window as Window & { __thrust?: { held: boolean } }).__thrust?.held)).toBe(false);
+  await expect.poll(() => page.evaluate(() => (window as Window & { __roadstronaut?: { held: boolean } }).__roadstronaut?.held)).toBe(false);
   await page.keyboard.up('Space');
 
   await page.locator('#hud [data-action="mute"]').click();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('thrustshift.muted'))).toBe('true');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('roadstronaut.muted'))).toBe('true');
   await page.reload();
   await expect(page.locator('#menu-screen')).toBeVisible();
   await expect(page.locator('#menu-screen [data-action="mute"]')).toHaveClass(/is-muted/);
@@ -104,17 +104,17 @@ test('pausing after an airborne burst stops effects and resumes a single loop', 
 
   await page.keyboard.down('Space');
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { activeRun: boolean; state: { grounded: boolean } } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { activeRun: boolean; state: { grounded: boolean } } }).__roadstronaut;
     return game?.activeRun && !game.state.grounded;
   });
   await page.keyboard.up('Space');
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { held: boolean; state: { grounded: boolean } } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { held: boolean; state: { grounded: boolean } } }).__roadstronaut;
     return game && !game.held && !game.state.grounded;
   });
   await page.keyboard.down('Space');
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { state: { burstsLeft: number } } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { state: { burstsLeft: number } } }).__roadstronaut;
     return game?.state.burstsLeft === 1;
   });
   await page.keyboard.up('Space');
@@ -125,7 +125,7 @@ test('pausing after an airborne burst stops effects and resumes a single loop', 
   });
   await expect(page.locator('#pause-screen')).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
-    const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
+    const audio = (window as Window & { __roadstronautAudio?: { playing(): string[] } }).__roadstronautAudio;
     return audio?.playing().filter((key) => ['engine', 'wind', 'rocket'].includes(key)) ?? [];
   })).toEqual([]);
 
@@ -135,15 +135,15 @@ test('pausing after an airborne burst stops effects and resumes a single loop', 
   });
   await page.locator('#pause-screen [data-action="resume"]').click();
   await expect.poll(() => page.evaluate(() => {
-    const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
+    const audio = (window as Window & { __roadstronautAudio?: { playing(): string[] } }).__roadstronautAudio;
     return audio?.playing().some((key) => key.startsWith('music-')) ?? false;
   }), { timeout: 3000 }).toBe(true);
   await expect.poll(() => page.evaluate(() => {
-    const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
+    const audio = (window as Window & { __roadstronautAudio?: { playing(): string[] } }).__roadstronautAudio;
     return audio?.playing().filter((key) => key === 'engine' || key === 'wind') ?? [];
   })).toEqual(['wind']);
   expect(await page.evaluate(() => {
-    const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
+    const audio = (window as Window & { __roadstronautAudio?: { playing(): string[] } }).__roadstronautAudio;
     return audio?.playing().filter((key) => key === 'engine' || key === 'wind').length;
   })).toBe(1);
 });
@@ -159,7 +159,7 @@ test('About panel opens and closes with the full disclaimer', async ({ page }) =
 });
 
 test('paint selector toggles coral and restores the prototype paint', async ({ page }) => {
-  await page.addInitScript(() => localStorage.removeItem('thrustshift.paint'));
+  await page.addInitScript(() => localStorage.removeItem('roadstronaut.paint'));
   await page.goto('/');
   const paintButton = page.locator('#menu-screen [data-action="paint"]');
 
@@ -167,13 +167,13 @@ test('paint selector toggles coral and restores the prototype paint', async ({ p
     await expect(paintButton).toHaveText('PAINT · PROTOTYPE');
     await paintButton.click();
     await expect(paintButton).toHaveText('PAINT · CORAL');
-    await expect.poll(() => page.evaluate(() => localStorage.getItem('thrustshift.paint'))).toBe('coral');
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('roadstronaut.paint'))).toBe('coral');
 
     await paintButton.click();
     await expect(paintButton).toHaveText('PAINT · PROTOTYPE');
-    await expect.poll(() => page.evaluate(() => localStorage.getItem('thrustshift.paint'))).toBe('prototype');
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('roadstronaut.paint'))).toBe('prototype');
   } finally {
-    await page.evaluate(() => localStorage.removeItem('thrustshift.paint'));
+    await page.evaluate(() => localStorage.removeItem('roadstronaut.paint'));
   }
 });
 
@@ -185,7 +185,7 @@ test('iPhone-sized portrait and landscape touch play do not scroll the page', as
   await startRun(page);
   await page.touchscreen.tap(195, 420);
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { state: { grounded: boolean } } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { state: { grounded: boolean } } }).__roadstronaut;
     return game && !game.state.grounded;
   });
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
@@ -196,7 +196,7 @@ test('iPhone-sized portrait and landscape touch play do not scroll the page', as
     const canvas = document.querySelector('#game-canvas canvas');
     return canvas && canvas.clientWidth > canvas.clientHeight;
   });
-  const active = await page.evaluate(() => Boolean((window as Window & { __thrust?: { activeRun: boolean } }).__thrust?.activeRun));
+  const active = await page.evaluate(() => Boolean((window as Window & { __roadstronaut?: { activeRun: boolean } }).__roadstronaut?.activeRun));
   if (!active) {
     await page.locator('#gameover-screen [data-action="play-again"]').click();
     await waitForActiveRun(page);
@@ -207,7 +207,7 @@ test('iPhone-sized portrait and landscape touch play do not scroll the page', as
   }
   await page.touchscreen.tap(420, 190);
   await page.waitForFunction(() => {
-    const game = (window as Window & { __thrust?: { state: { grounded: boolean } } }).__thrust;
+    const game = (window as Window & { __roadstronaut?: { state: { grounded: boolean } } }).__roadstronaut;
     return game && !game.state.grounded;
   });
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);

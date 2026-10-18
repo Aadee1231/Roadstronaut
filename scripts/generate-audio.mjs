@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const sampleRate = 22050;
-const workspace = mkdtempSync(join(tmpdir(), 'thrustshift-audio-'));
+const workspace = mkdtempSync(join(tmpdir(), 'roadstronaut-audio-'));
 const outputDirectory = resolve('public/audio');
 const tau = Math.PI * 2;
 

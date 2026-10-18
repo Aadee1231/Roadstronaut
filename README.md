@@ -1,6 +1,6 @@
-# THRUSTSHIFT
+# ROADSTRONAUT
 
-**FLIP. FLY. SURVIVE.** THRUSTSHIFT is an original endless rocket-car stunt arcade game. Pilot the VX-1 through a neon night drive, leap over hazards, rotate only while airborne, and release to steady your landing.
+**FLIP. FLY. SURVIVE.** ROADSTRONAUT is an original endless rocket-car stunt arcade game. Pilot the VX-1 through a neon night drive, leap over hazards, rotate only while airborne, and release to steady your landing.
 
 ## Play
 
@@ -65,4 +65,4 @@ Run tokens are signed, single-use, time-limited, and bound to the anonymous play
 
 ## Credits and affiliation
 
-All game art and audio are original procedural work; see [ASSET_CREDITS.md](ASSET_CREDITS.md) for third-party library and font credits. THRUSTSHIFT is an unofficial fan-inspired game and is not affiliated with any automaker.
+All game art and audio are original procedural work; see [ASSET_CREDITS.md](ASSET_CREDITS.md) for third-party library and font credits. ROADSTRONAUT is an unofficial fan-inspired game and is not affiliated with any automaker.

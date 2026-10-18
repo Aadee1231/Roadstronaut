@@ -23,7 +23,7 @@ function send(response: ServerResponse, result: HandlerResponse): void {
   response.end(JSON.stringify(result.body));
 }
 
-export function thrustshiftApiPlugin(): Plugin {
+export function roadstronautApiPlugin(): Plugin {
   const handlers = createHandlers({
     store: new MemoryStore(),
     mode: 'dev-memory',
@@ -31,7 +31,7 @@ export function thrustshiftApiPlugin(): Plugin {
   });
 
   return {
-    name: 'thrustshift-dev-api',
+    name: 'roadstronaut-dev-api',
     configureServer(server) {
       server.middlewares.use(async (request, response, next) => {
         const url = new URL(request.url ?? '/', 'http://localhost');

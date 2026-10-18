@@ -9,7 +9,7 @@ import { CAR_TEXTURE_SCALE, registerArt } from './art/registerArt';
 import { BIOMES, blendBiome } from './biomes';
 
 function readPaint(): string {
-  try { return localStorage.getItem('thrustshift.paint') ?? 'prototype'; } catch { return 'prototype'; }
+  try { return localStorage.getItem('roadstronaut.paint') ?? 'prototype'; } catch { return 'prototype'; }
 }
 
 export interface RunFinished {

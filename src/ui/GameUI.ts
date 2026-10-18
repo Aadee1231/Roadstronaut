@@ -5,11 +5,11 @@ import type { SimulationState } from '../sim/simulation';
 import { formatDistance, unitsPerSecondToMph } from '../sim/units';
 
 const KEYS = {
-  playerId: 'thrustshift.playerId',
-  nickname: 'thrustshift.nickname',
-  personalBest: 'thrustshift.personalBest',
-  muted: 'thrustshift.muted',
-  tutorial: 'thrustshift.tutorialSeen',
+  playerId: 'roadstronaut.playerId',
+  nickname: 'roadstronaut.nickname',
+  personalBest: 'roadstronaut.personalBest',
+  muted: 'roadstronaut.muted',
+  tutorial: 'roadstronaut.tutorialSeen',
 };
 
 function storageGet(key: string, fallback = ''): string {
@@ -89,7 +89,7 @@ export class GameUI {
       <div class="ui-vignette"></div>
       <section class="screen-panel menu-panel" id="menu-screen" aria-label="Main menu">
         <div class="menu-topline"><button class="icon-button sound-button" data-action="mute" aria-label="Toggle sound"></button></div>
-        <h1 class="wordmark">THRUST<span>SHIFT</span></h1>
+        <h1 class="wordmark">ROAD<span>STRONAUT</span></h1>
         <p class="menu-subtitle">UNOFFICIAL ROADSTER STUNT CHALLENGE</p>
         <p class="tagline">FLIP. FLY. SURVIVE.</p>
         <div class="menu-actions">
@@ -149,9 +149,9 @@ export class GameUI {
         <button class="button button-primary" data-action="close-panel">GOT IT</button>
       </section>
 
-      <section class="screen-panel modal-panel about-panel is-hidden" id="about-screen" aria-label="About THRUSTSHIFT">
-        <div class="panel-heading"><div><span class="panel-eyebrow">INDEPENDENT GAME PROJECT</span><h2>ABOUT THRUSTSHIFT</h2></div><button class="icon-button close-button" data-action="close-panel" aria-label="Close">×</button></div>
-        <p class="about-disclaimer">THRUSTSHIFT is an independent fan-made game inspired by the Tesla Roadster demonstration. It is not affiliated with, sponsored by, or endorsed by Tesla, Inc. or SpaceX. All trademarks belong to their respective owners.</p>
+      <section class="screen-panel modal-panel about-panel is-hidden" id="about-screen" aria-label="About ROADSTRONAUT">
+        <div class="panel-heading"><div><span class="panel-eyebrow">INDEPENDENT GAME PROJECT</span><h2>ABOUT ROADSTRONAUT</h2></div><button class="icon-button close-button" data-action="close-panel" aria-label="Close">×</button></div>
+        <p class="about-disclaimer">ROADSTRONAUT is an independent fan-made game inspired by the Tesla Roadster demonstration. It is not affiliated with, sponsored by, or endorsed by Tesla, Inc. or SpaceX. All trademarks belong to their respective owners.</p>
         <div class="about-credits">
           <p><b>ART</b> Original procedural car, wheel, thruster, sky, mountain, and star-field artwork.</p>
           <p><b>AUDIO</b> Original synthesized music and sound effects; no third-party samples.</p>
@@ -184,7 +184,7 @@ export class GameUI {
       'period-all': () => { this.period = 'all'; void this.loadLeaderboard(); },
       'period-week': () => { this.period = 'week'; void this.loadLeaderboard(); },
       paint: () => {
-        storageSet('thrustshift.paint', storageGet('thrustshift.paint', 'prototype') === 'coral' ? 'prototype' : 'coral');
+        storageSet('roadstronaut.paint', storageGet('roadstronaut.paint', 'prototype') === 'coral' ? 'prototype' : 'coral');
         this.updatePaintButton();
         this.game.events.emit('paint-change');
       },
@@ -231,7 +231,7 @@ export class GameUI {
   }
 
   private updatePaintButton(): void {
-    const coral = storageGet('thrustshift.paint', 'prototype') === 'coral';
+    const coral = storageGet('roadstronaut.paint', 'prototype') === 'coral';
     const button = this.root.querySelector<HTMLButtonElement>('[data-action="paint"]');
     if (button) button.textContent = coral ? 'PAINT · CORAL' : 'PAINT · PROTOTYPE';
   }
@@ -518,9 +518,9 @@ export class GameUI {
 
   private async shareScore(): Promise<void> {
     const score = this.root.querySelector('#final-score')?.textContent ?? '0';
-    const text = `I scored ${score} in THRUSTSHIFT — FLIP. FLY. SURVIVE.`;
+    const text = `I scored ${score} in ROADSTRONAUT — FLIP. FLY. SURVIVE.`;
     try {
-      if (navigator.share) await navigator.share({ title: 'THRUSTSHIFT', text, url: location.href });
+      if (navigator.share) await navigator.share({ title: 'ROADSTRONAUT', text, url: location.href });
       else {
         await navigator.clipboard.writeText(`${text} ${location.href}`);
         this.text('#submit-status', 'Score link copied to clipboard.');

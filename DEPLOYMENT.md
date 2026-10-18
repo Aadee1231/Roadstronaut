@@ -1,6 +1,6 @@
 # Deployment
 
-THRUSTSHIFT deploys to Vercel as a Vite static app plus four Node.js serverless API routes. The browser bundle does not need Supabase credentials.
+ROADSTRONAUT deploys to Vercel as a Vite static app plus four Node.js serverless API routes. The browser bundle does not need Supabase credentials.
 
 ## 1. Create and configure Supabase
 
