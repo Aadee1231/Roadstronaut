@@ -1,14 +1,16 @@
 import {
   AIRBORNE_FALL_LIMIT, BURST_COOLDOWN, BURST_COUNT_PER_AIR_PHASE, BURST_ENERGY,
   BURST_LIFT_LIMIT, BURST_LIFT_VELOCITY, BURST_ROTATION_KICK, CAR_HEIGHT, CAR_LENGTH,
-  CRASH_IMPACT, ENERGY_GROUNDED_REGEN, ENERGY_MAX, FIXED_DT, GAP_FALL_LIMIT, GREAT_LIMIT,
-  GRAVITY, HARD_IMPACT, JUMP_VELOCITY, LANDING_LIMIT, LAUNCH_BOOST, LAUNCH_WINDOW_FRACTION,
+  CRASH_IMPACT, ENERGY_GROUNDED_REGEN, ENERGY_MAX, FAN_DRAIN, FAN_GROUNDED_REFILL,
+  FAN_MAX, FIXED_DT, GAP_FALL_LIMIT, GREAT_LIMIT, GRAVITY, HARD_IMPACT, JUMP_VELOCITY,
+  LANDING_LIMIT, LAUNCH_BOOST, LAUNCH_WINDOW_FRACTION,
   MIN_AUTO_TAKEOFF_VELOCITY, MIN_REWARD_AIRTIME, MAX_ANGULAR_SPEED, MAX_RUN_SECONDS,
   NEAR_MISS_CLEARANCE, PERFECT_LIMIT, ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND,
+  SUCTION_ALIGN, SUCTION_POINTS_PER_SECOND,
   SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
 } from './constants';
-import { BASE_Y, createCourse, type Course, type Surface } from './course';
+import { BASE_Y, createCourse, type CeilingSegment, type Course, type Surface } from './course';
 import { atan2, clamp, cos, max, min, normalizeAngle, sin } from './detmath';
 import { awardLanding, awardNearMiss, createRunStats, type LandingQuality, type RunStats } from './scoring';
 
@@ -20,6 +22,9 @@ export type SimEvent =
   | { type: 'touchdown' }
   | { type: 'hardLanding' }
   | { type: 'thrusterBurst' }
+  | { type: 'suctionEngage' }
+  | { type: 'suctionRelease'; reason: 'end' | 'empty' }
+  | { type: 'suctionBonus'; seconds: number; points: number }
   | { type: 'nearMiss'; hazardId: string }
   | { type: 'crash'; reason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' };
 
@@ -34,6 +39,9 @@ export interface SimulationState {
   energy: number;
   burstsLeft: number;
   burstCooldown: number;
+  fan: number;
+  inverted: boolean;
+  fanRailVisible: boolean;
   grounded: boolean;
   rotating: boolean;
   crashed: boolean;
@@ -76,6 +84,9 @@ export class Simulation {
   private previousWheelBottoms: [number, number] = [Number.NaN, Number.NaN];
   private rewardedLandingThisAirbornePhase = false;
   private lastMilestone = 0;
+  private previousBodyTop = Infinity;
+  private attachedCeiling: CeilingSegment | null = null;
+  private suctionBonusElapsed = 0;
 
   constructor(seed: number) {
     this.course = createCourse(seed);
@@ -91,6 +102,9 @@ export class Simulation {
       energy: ENERGY_MAX,
       burstsLeft: BURST_COUNT_PER_AIR_PHASE,
       burstCooldown: 0,
+      fan: FAN_MAX,
+      inverted: false,
+      fanRailVisible: false,
       grounded: true,
       rotating: false,
       crashed: false,
@@ -120,12 +134,15 @@ export class Simulation {
       this.wheelBottomAt(WHEELBASE / 2),
       this.wheelBottomAt(-WHEELBASE / 2),
     ];
+    this.previousBodyTop = this.bodyTop();
     state.burstCooldown = max(0, state.burstCooldown - dt);
     state.elapsed += dt;
     state.speed = speedAtTime(state.elapsed);
     state.vx = state.speed;
     this.previousX = state.x;
     state.x += state.vx * dt;
+    state.fanRailVisible = state.fanRailVisible
+      || this.course.ceilingsInRange(state.x, state.x + state.speed * 8).length > 0;
     const previousDistance = state.stats.distance;
     state.stats.distance = Math.floor(state.x / 10);
     state.stats.score += state.stats.distance - previousDistance;
@@ -134,6 +151,7 @@ export class Simulation {
     const newPress = held && !this.previousHeld;
     if (state.grounded) {
       state.energy = min(ENERGY_MAX, state.energy + ENERGY_GROUNDED_REGEN * dt);
+      state.fan = min(FAN_MAX, state.fan + FAN_GROUNDED_REFILL * dt);
       state.angularVelocity *= 0.5;
       state.comboIdle += dt;
       if (state.comboIdle >= 5) {
@@ -180,6 +198,8 @@ export class Simulation {
           state.vy = takeoffVelocity;
         }
       }
+    } else if (state.inverted) {
+      this.stepSuction(dt);
     } else {
       if (newPress) {
         this.airbornePressEligible = true;
@@ -217,7 +237,8 @@ export class Simulation {
         state.flips = fullFlips;
         this.events.push({ type: 'flipComplete', count: state.flips });
       }
-      if (!this.checkPitFall()) this.checkLanding();
+      this.checkCeilingContact();
+      if (!state.inverted && !state.crashed && !this.checkPitFall()) this.checkLanding();
     }
 
     if (!state.crashed) this.checkCollision();
@@ -300,6 +321,80 @@ export class Simulation {
       y: this.state.y + sine * offset,
       radius,
     }));
+  }
+
+  private bodyTop(): number {
+    return this.bodyCircles().reduce((top, circle) => min(top, circle.y - circle.radius), Infinity);
+  }
+
+  private checkCeilingContact(): void {
+    const state = this.state;
+    const ceiling = this.course.ceilingAt(state.x);
+    if (!ceiling) return;
+    const wheels = [this.wheelPoint(WHEELBASE / 2), this.wheelPoint(-WHEELBASE / 2)];
+    const wheelTop = wheels.reduce((top, wheel) => min(top, wheel.bottom - WHEEL_RADIUS * 2), Infinity);
+    const previousWheelTop = this.previousWheelBottoms.reduce(
+      (top, bottom) => min(top, bottom - WHEEL_RADIUS * 2),
+      Infinity,
+    );
+    const crossedWheel = previousWheelTop > ceiling.y && wheelTop <= ceiling.y;
+    const roofContact = this.bodyTop() <= ceiling.y && this.previousBodyTop > ceiling.y;
+    if (!crossedWheel && !roofContact) return;
+
+    const aligned = Math.abs(normalizeAngle(state.angle - Math.PI)) <= SUCTION_ALIGN;
+    if (crossedWheel && aligned && state.fan >= 5) {
+      state.inverted = true;
+      state.angle = Math.PI;
+      state.angularVelocity = 0;
+      state.vy = 0;
+      state.y = ceiling.y + WHEEL_VERTICAL_OFFSET + WHEEL_RADIUS;
+      this.attachedCeiling = ceiling;
+      this.suctionBonusElapsed = 0;
+      this.events.push({ type: 'suctionEngage' });
+      return;
+    }
+
+    state.y = ceiling.y + BODY_RADIUS;
+    state.vy = Math.abs(state.vy) * 0.3;
+  }
+
+  private stepSuction(dt: number): void {
+    const state = this.state;
+    const ceiling = this.attachedCeiling;
+    if (!ceiling || state.x >= ceiling.x1) {
+      this.releaseSuction('end');
+      return;
+    }
+    state.airtime += dt;
+    state.fan = max(0, state.fan - FAN_DRAIN * dt);
+    if (state.fan === 0) {
+      this.releaseSuction('empty');
+      return;
+    }
+    state.angle = Math.PI;
+    state.angularVelocity = 0;
+    state.vy = 0;
+    state.y = ceiling.y + WHEEL_VERTICAL_OFFSET + WHEEL_RADIUS;
+    this.suctionBonusElapsed += dt;
+    if (this.suctionBonusElapsed >= 1) {
+      const seconds = Math.floor(this.suctionBonusElapsed);
+      this.suctionBonusElapsed -= seconds;
+      const oldCombo = state.combo;
+      state.combo += seconds;
+      state.comboIdle = 0;
+      const points = seconds * SUCTION_POINTS_PER_SECOND * Math.max(1, oldCombo + 1);
+      state.stats.score += points;
+      this.events.push({ type: 'comboUp', count: state.combo });
+      this.events.push({ type: 'suctionBonus', seconds, points });
+    }
+  }
+
+  private releaseSuction(reason: 'end' | 'empty'): void {
+    this.state.inverted = false;
+    this.state.vy = 60;
+    this.attachedCeiling = null;
+    this.suctionBonusElapsed = 0;
+    this.events.push({ type: 'suctionRelease', reason });
   }
 
   private checkLanding(): void {

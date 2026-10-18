@@ -8,7 +8,7 @@ import { SeededRng } from './rng';
 
 export const BASE_Y = 520;
 
-export type SegmentKind = 'flat' | 'kicker' | 'launch' | 'slope' | 'platform' | 'gap';
+export type SegmentKind = 'flat' | 'kicker' | 'launch' | 'slope' | 'platform' | 'gap' | 'quarter';
 
 export interface CourseSegment {
   id: string;
@@ -30,6 +30,13 @@ export interface Hazard {
   minSpacing: number;
 }
 
+export interface CeilingSegment {
+  id: string;
+  x0: number;
+  x1: number;
+  y: number;
+}
+
 export interface Surface {
   y: number;
   slope: number;
@@ -44,6 +51,8 @@ const PLAIN_GAP_APPROACH = 1.5 * CAR_LENGTH;
 const OPENING_RUNWAY_DISTANCE = 1_500;
 const ONBOARDING_END_SECONDS = 12;
 const ONBOARDING_HAZARD_SPACING_SECONDS = 1.8;
+const FIRST_SUCTION_AT = 62;
+const SUCTION_INTERVAL = 30;
 
 function difficultyBand(time: number): 0 | 1 | 2 | 3 {
   if (time < 12) return 0;
@@ -56,10 +65,12 @@ export class Course {
   private readonly rng: SeededRng;
   private readonly segments: CourseSegment[] = [];
   private readonly hazards: Hazard[] = [];
+  private readonly ceilings: CeilingSegment[] = [];
   private x = 0;
   private y = BASE_Y;
   private protectedUntil = 0;
   private nextLaunchAt = distanceAtTime(10);
+  private nextSuctionAt = distanceAtTime(FIRST_SUCTION_AT);
 
   constructor(seed: number) {
     this.rng = new SeededRng(seed >>> 0);
@@ -165,6 +176,13 @@ export class Course {
     if (this.x < OPENING_RUNWAY_DISTANCE) {
       if (this.rng.next() < 0.5) this.generateHill();
       else this.generateKicker();
+      this.appendBreather();
+      return;
+    }
+
+    if (this.x >= this.nextSuctionAt) {
+      this.generateSuctionSection();
+      this.nextSuctionAt = distanceAtTime(timeAtDistance(this.x) + SUCTION_INTERVAL);
       this.appendBreather();
       return;
     }
@@ -416,6 +434,28 @@ export class Course {
     }
   }
 
+  private generateSuctionSection(): void {
+    const speed = this.speedAtX(this.x);
+    const startY = this.y;
+    this.appendFlat(speed * 0.45);
+    this.appendSegment('quarter', speed * 0.3, startY - 24);
+    this.appendSegment('quarter', speed * 0.3, startY - 64);
+    this.appendSegment('quarter', speed * 0.12, startY - 190);
+
+    const lipY = this.y;
+    this.appendSegment('slope', speed * 0.3, BASE_Y - 40);
+    const railLength = speed * 0.95;
+    this.ceilings.push({
+      id: `ceiling-${this.ceilings.length}`,
+      x0: this.x,
+      x1: this.x + railLength,
+      y: lipY - 230,
+    });
+    this.appendFlat(railLength);
+    this.appendSegment('slope', speed * 0.25, BASE_Y);
+    this.protectedUntil = this.x;
+  }
+
   private ensureThrough(x: number): void {
     const target = max(0, x);
     while (this.segments.length === 0 || this.segments[this.segments.length - 1].x1 < target) {
@@ -483,6 +523,19 @@ export class Course {
       result.push({ ...this.segments[index] });
     }
     return result;
+  }
+
+  ceilingsInRange(x0: number, x1: number): CeilingSegment[] {
+    const startX = min(x0, x1);
+    const endX = max(x0, x1);
+    this.ensureThrough(endX);
+    return this.ceilings
+      .filter((ceiling) => ceiling.x1 >= startX && ceiling.x0 <= endX)
+      .map((ceiling) => ({ ...ceiling }));
+  }
+
+  ceilingAt(x: number): CeilingSegment | null {
+    return this.ceilingsInRange(x, x).find((ceiling) => x >= ceiling.x0 && x <= ceiling.x1) ?? null;
   }
 }
 

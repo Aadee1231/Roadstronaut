@@ -26,7 +26,7 @@ frame-time-dependent updates.
 | `LAUNCH_BOOST` | `−600 units/s` | Environmental impulse from a glowing launch ramp. |
 | `LAUNCH_WINDOW_FRACTION` | `0.25` | Final fraction of a launch ramp that upgrades a press to super launch. |
 | `MIN_AUTO_TAKEOFF_VELOCITY` | `−150 units/s` | Minimum upward crest velocity for an automatic takeoff. |
-| `ROTATION_ACCEL` | `16 rad/s²` | Forward angular acceleration while held in the air. |
+| `ROTATION_ACCEL` | `24 rad/s²` | Forward angular acceleration while held in the air; tuned for rail half-flips. |
 | `MAX_ANGULAR_SPEED` | `8.5 rad/s` | Maximum forward rotation rate. |
 | `RELEASE_DAMPING_PER_STEP` | `0.94333544987349216` | Per-step angular-velocity damping, equivalent to `exp(−7 × FIXED_DT)`. |
 | Grounded angular damping | `0.5 per step` | Settles angular velocity while the car is on a surface. |
@@ -45,6 +45,11 @@ frame-time-dependent updates.
 | `BURST_LIFT_VELOCITY` | `−170 units/s` | Added upward velocity when a burst is used with `vy > BURST_LIFT_LIMIT`. |
 | `BURST_LIFT_LIMIT` | `−200 units/s` | Bursts do not add lift while already rising faster than this. |
 | `BURST_ROTATION_KICK` | `1.25 rad/s` | Small forward angular-velocity impulse on a successful burst. |
+| `FAN_MAX` | `100` | Separate suction-fan resource cap. |
+| `FAN_DRAIN` | `45 units/s` | Fan drain while attached to an overhead rail. |
+| `FAN_GROUNDED_REFILL` | `30 units/s` | Fan refill while grounded. |
+| `SUCTION_ALIGN` | `π / 3 rad` | Maximum angle error from inverted (`π`) for automatic engagement. |
+| `SUCTION_POINTS_PER_SECOND` | `150` | Base score reward per complete second inverted; current combo scales the reward. |
 
 The ground press starts a jump and never rotates or bursts. A new press during
 airtime may burst if its count, cooldown, and energy allow it; holding then
@@ -76,6 +81,8 @@ a gap rim cannot be rescued by snapping onto the far edge.
 Plain gaps have a flat or level-platform approach of at least `1.5 ×
 CAR_LENGTH`. Their width remains bounded by the normal jump reach. The only
 current terrain that may automatically propel a car across a gap is a launch
-ramp; quarter-pipe suction sections are separately specified environmental
-launches. The fixed-step simulation owns all contact and movement outcomes,
-while renderers may interpolate but must not alter state.
+ramp; a concave three-piece quarter-pipe is a separate automatic suction-route
+launch. Fan rails span `0.95 ×` the speed at their start, over a safe flat floor;
+their quarter-pipe approach and down-sloping landing ramp remain deterministic
+course geometry. The fixed-step simulation owns all contact and movement
+outcomes, while renderers may interpolate but must not alter state.

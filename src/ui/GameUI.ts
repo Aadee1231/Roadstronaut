@@ -84,7 +84,10 @@ export class GameUI {
           <div class="hud-controls"><button class="icon-button" data-action="mute" aria-label="Toggle sound"></button><button class="icon-button pause-button" data-action="pause" aria-label="Pause">Ⅱ</button></div>
         </div>
         <div class="hud-bottom">
-          <div class="energy-panel"><div class="meter-heading"><span>THRUSTER</span><b id="energy-value">100</b></div><div class="energy-track"><div class="energy-fill" id="energy-fill"></div></div></div>
+          <div class="resource-panels">
+            <div class="energy-panel"><div class="meter-heading"><span>THRUSTER</span><b id="energy-value">100</b></div><div class="energy-track"><div class="energy-fill" id="energy-fill"></div></div></div>
+            <div class="energy-panel fan-panel is-hidden" id="fan-panel"><div class="meter-heading"><span>FAN</span><b id="fan-value">100</b></div><div class="energy-track"><div class="energy-fill fan-fill" id="fan-fill"></div></div></div>
+          </div>
           <div class="speed-panel"><strong id="speed-value">430</strong><span>KM/H</span><small id="distance-value">0 M</small></div>
         </div>
         <div class="tutorial-hint is-hidden" id="tutorial-hint"></div>
@@ -302,6 +305,13 @@ export class GameUI {
       fill.style.width = `${state.energy}%`;
       fill.classList.toggle('is-empty', state.energy < 15);
     }
+    const fanFill = this.root.querySelector<HTMLElement>('#fan-fill');
+    if (fanFill) {
+      fanFill.style.width = `${state.fan}%`;
+      fanFill.classList.toggle('is-empty', state.fan < 15);
+    }
+    this.text('#fan-value', String(Math.round(state.fan)));
+    this.root.querySelector('#fan-panel')?.classList.toggle('is-hidden', !state.fanRailVisible && !state.inverted);
     this.updateTutorial(state);
   }
 
@@ -309,7 +319,12 @@ export class GameUI {
     for (const event of events) {
       const label = event.type === 'land'
         ? event.quality === 'perfect' ? 'PERFECT LANDING' : event.flips === 2 ? 'DOUBLE FLIP' : event.flips === 3 ? 'TRIPLE FLIP' : event.flips ? 'FRONT FLIP' : 'CLEAN LANDING'
-        : event.type === 'nearMiss' ? 'NEAR MISS' : event.type === 'superLaunch' ? 'SUPER LAUNCH' : event.type === 'crash' ? 'RUN ENDED' : '';
+        : event.type === 'nearMiss' ? 'NEAR MISS'
+          : event.type === 'superLaunch' ? 'SUPER LAUNCH'
+            : event.type === 'hardLanding' ? 'HARD LANDING'
+              : event.type === 'suctionEngage' ? 'SUCTION ENGAGED'
+                : event.type === 'thrusterBurst' ? 'THRUSTER BURST'
+                  : event.type === 'crash' ? 'RUN ENDED' : '';
       if (!label) continue;
       const item = document.createElement('div');
       item.className = `feedback-item ${event.quality === 'perfect' ? 'feedback-perfect' : ''}`;

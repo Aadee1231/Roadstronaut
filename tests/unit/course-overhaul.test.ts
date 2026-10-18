@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CAR_LENGTH, FIXED_DT, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY, MAX_RUN_SECONDS,
-  LAUNCH_BOOST, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, SUPER_JUMP_VELOCITY,
+  FAN_MAX, LAUNCH_BOOST, MAX_SPEED, SPEED_RAMP_SECONDS, START_SPEED, SUPER_JUMP_VELOCITY,
   distanceAtTime, speedAtTime, timeAtDistance,
 } from '../../src/sim/constants';
 import { atan2, sin } from '../../src/sim/detmath';
@@ -130,6 +130,65 @@ function runNoFlipBot(seed: number, seconds: number): Simulation {
   return simulation;
 }
 
+interface SuctionTrial {
+  engaged: boolean;
+  releaseReason: 'end' | 'empty' | null;
+  alive: boolean;
+  grounded: boolean;
+  flips: number;
+  fanMinimum: number;
+}
+
+function runSuctionTrial(
+  seed: number,
+  options: { noInputFromQuarter?: boolean; lowFan?: boolean } = {},
+): SuctionTrial {
+  const simulation = new Simulation(seed);
+  const ceiling = simulation.course.ceilingsInRange(0, distanceAtTime(90))[0];
+  if (!ceiling) throw new Error(`seed ${seed} has no suction section`);
+  const segments = simulation.course.segmentsInRange(0, ceiling.x0);
+  const quarter = segments.filter((segment) => segment.kind === 'quarter').at(-1);
+  if (!quarter) throw new Error(`seed ${seed} suction section has no quarter-pipe`);
+
+  let engaged = false;
+  let releaseReason: SuctionTrial['releaseReason'] = null;
+  let fanMinimum = FAN_MAX;
+  let fanSet = false;
+  const maxTicks = Math.ceil(100 / FIXED_DT);
+  for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+    const state = simulation.state;
+    let held = lookaheadJump(simulation);
+    if (state.x >= quarter.x0 && !state.grounded && state.x < ceiling.x1 + state.speed) {
+      if (options.lowFan && !fanSet) {
+        state.fan = 5;
+        fanSet = true;
+      }
+      held = !options.noInputFromQuarter && !state.inverted && (engaged || state.x >= quarter.x0);
+    }
+    if (state.inverted) {
+      engaged = true;
+      held = false;
+    } else if (releaseReason === 'end' && engaged && state.x >= ceiling.x1) {
+      held = state.angle < Math.PI * 2 - 0.6;
+    }
+    simulation.step(held);
+    fanMinimum = Math.min(fanMinimum, simulation.state.fan);
+    if (simulation.events.some((event) => event.type === 'suctionEngage')) engaged = true;
+    const release = simulation.events.find((event) => event.type === 'suctionRelease');
+    if (release?.type === 'suctionRelease') releaseReason = release.reason;
+    if (options.noInputFromQuarter && state.x > ceiling.x1 && simulation.state.grounded) break;
+    if (engaged && releaseReason && simulation.state.grounded && simulation.state.x >= ceiling.x1) break;
+  }
+  return {
+    engaged,
+    releaseReason,
+    alive: !simulation.state.crashed,
+    grounded: simulation.state.grounded,
+    flips: simulation.state.stats.totalFlips,
+    fanMinimum,
+  };
+}
+
 function runAcrossFirstPlainGap(seed: number, jumpGap: boolean): { simulation: Simulation; gap: Hazard } {
   const simulation = new Simulation(seed);
   const segments = simulation.course.segmentsInRange(0, DISTANCE_150_SECONDS);
@@ -247,18 +306,25 @@ describe('contiguous deterministic course generator', () => {
     const inOrder = createCourse(0x5eed);
     const inOrderSegments = ranges.map(([start, end]) => inOrder.segmentsInRange(start, end));
     const inOrderHazards = ranges.map(([start, end]) => inOrder.hazardsAhead(start, end - start));
+    const inOrderCeilings = ranges.map(([start, end]) => inOrder.ceilingsInRange(start, end));
     const reverseOrder = createCourse(0x5eed);
-    const reverseResults = new Map<number, { segments: ReturnType<Course['segmentsInRange']>; hazards: Hazard[] }>();
+    const reverseResults = new Map<number, {
+      segments: ReturnType<Course['segmentsInRange']>;
+      hazards: Hazard[];
+      ceilings: ReturnType<Course['ceilingsInRange']>;
+    }>();
     for (let index = ranges.length - 1; index >= 0; index -= 1) {
       const [start, end] = ranges[index];
       reverseResults.set(index, {
         segments: reverseOrder.segmentsInRange(start, end),
         hazards: reverseOrder.hazardsAhead(start, end - start),
+        ceilings: reverseOrder.ceilingsInRange(start, end),
       });
     }
     ranges.forEach((_, index) => {
       expect(reverseResults.get(index)?.segments).toEqual(inOrderSegments[index]);
       expect(reverseResults.get(index)?.hazards).toEqual(inOrderHazards[index]);
+      expect(reverseResults.get(index)?.ceilings).toEqual(inOrderCeilings[index]);
     });
     expect(inOrder.surfaceAt(0)?.y).toBe(BASE_Y);
   });
@@ -307,6 +373,7 @@ describe('contiguous deterministic course generator', () => {
         found.add('launch over gap');
       }
       if (segments.some((segment) => segment.kind === 'platform')) found.add('platform');
+      if (segments.some((segment) => segment.kind === 'quarter')) found.add('quarter');
       for (let index = 0; index < hazards.length - 1; index += 1) {
         const current = hazards[index];
         const next = hazards[index + 1];
@@ -321,12 +388,48 @@ describe('contiguous deterministic course generator', () => {
     }
     expect([...found].sort()).toEqual([
       'double', 'flat', 'gap', 'hill', 'kicker', 'launch', 'launch over gap',
-      'narrow landing', 'obstacle-gap', 'platform', 'single obstacle',
+      'narrow landing', 'obstacle-gap', 'platform', 'quarter', 'single obstacle',
     ]);
   }, 120_000);
 });
 
 describe('procedural gameplay fairness', () => {
+  it('builds reachable suction rails over a safe flat route', () => {
+    for (let seed = 0; seed < 20; seed += 1) {
+      const course = createCourse(seed);
+      const ceiling = course.ceilingsInRange(0, distanceAtTime(90))[0];
+      expect(ceiling).toBeDefined();
+      const speed = speedAtTime(timeAtDistance(ceiling!.x0));
+      expect((ceiling!.x1 - ceiling!.x0) / speed).toBeLessThanOrEqual(1.5);
+      const floor = course.segmentsInRange(ceiling!.x0, ceiling!.x1)
+        .find((segment) => segment.x0 <= ceiling!.x0 && segment.x1 >= ceiling!.x1);
+      expect(floor?.kind).toBe('flat');
+      const quarter = course.segmentsInRange(0, ceiling!.x0)
+        .filter((segment) => segment.kind === 'quarter').at(-1);
+      expect(quarter).toBeDefined();
+    }
+  });
+
+  it('lets a scripted half-flip bot clear at least 85 of 100 suction sections', () => {
+    const results = Array.from({ length: 100 }, (_, seed) => runSuctionTrial(seed));
+    const successes = results.filter((result) => (
+      result.engaged && result.releaseReason === 'end' && result.alive && result.grounded && result.flips >= 1
+    )).length;
+    console.info(`suction-section bot success: ${successes}/100`);
+    expect(successes).toBeGreaterThanOrEqual(85);
+  }, 120_000);
+
+  it('survives a no-input rail miss and releases suction when the fan empties', () => {
+    const miss = runSuctionTrial(5, { noInputFromQuarter: true });
+    expect(miss.alive).toBe(true);
+    expect(miss.grounded).toBe(true);
+
+    const empty = runSuctionTrial(5, { lowFan: true });
+    expect(empty.engaged).toBe(true);
+    expect(empty.releaseReason).toBe('empty');
+    expect(empty.fanMinimum).toBeGreaterThanOrEqual(0);
+  }, 120_000);
+
   it('falls into a plain gap without input and clears it with a lead-distance jump', () => {
     const noJump = runAcrossFirstPlainGap(0, false);
     expect(noJump.simulation.state.crashed).toBe(true);
