@@ -53,10 +53,14 @@ export class AudioManager {
     }
   };
 
-  constructor(private readonly events: Phaser.Events.EventEmitter) {
-    try { this.muted = localStorage.getItem('thrustshift.muted') === 'true'; } catch { this.muted = false; }
+  private registerUnlockListeners(): void {
     document.addEventListener('pointerdown', this.onUnlock, { once: true, passive: true, capture: true });
     document.addEventListener('keydown', this.onUnlock, { once: true });
+  }
+
+  constructor(private readonly events: Phaser.Events.EventEmitter) {
+    try { this.muted = localStorage.getItem('thrustshift.muted') === 'true'; } catch { this.muted = false; }
+    this.registerUnlockListeners();
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     window.__thrustshiftAudio = this.debugHook;
     this.events.on('run-start', () => {
@@ -74,6 +78,7 @@ export class AudioManager {
     this.events.on('run-resume', () => {
       this.runPaused = false;
       if (this.currentMusic) this.currentMusic.volume = this.muted ? 0 : 0.28;
+      if (this.currentMusic?.paused && this.unlocked && !this.visibilityPaused) void this.resumeMusic();
     });
     this.events.on('run-quit', () => {
       this.runPaused = false;
@@ -115,12 +120,18 @@ export class AudioManager {
     await this.playMusic(this.currentMusicKey ?? 'menu');
   }
 
+  private handlePlayRejection(error: unknown): void {
+    if (error instanceof DOMException && error.name === 'AbortError') return;
+    this.unlocked = false;
+    this.registerUnlockListeners();
+  }
+
   private async playMusic(which: 'menu' | 'game'): Promise<void> {
     this.currentMusicKey = which;
     if (!this.unlocked || this.visibilityPaused) return;
     if (this.currentMusic?.src.endsWith(MUSIC[which])) {
       this.currentMusic.volume = this.muted ? 0 : this.runPaused ? 0.28 * 0.35 : 0.28;
-      if (this.currentMusic.paused) void this.currentMusic.play().catch(() => undefined);
+      if (this.currentMusic.paused) void this.currentMusic.play().catch((error: unknown) => this.handlePlayRejection(error));
       return;
     }
     this.currentMusic?.pause();
@@ -129,7 +140,7 @@ export class AudioManager {
     music.preload = 'auto';
     music.volume = this.muted ? 0 : 0.28;
     this.currentMusic = music;
-    try { await music.play(); } catch { this.unlocked = false; }
+    try { await music.play(); } catch (error) { this.handlePlayRejection(error); }
   }
 
   private onSimulation(state: SimulationState, events: readonly SimEvent[]): void {
@@ -214,7 +225,7 @@ export class AudioManager {
       return;
     }
     this.currentMusic.volume = this.muted ? 0 : this.runPaused ? 0.28 * 0.35 : 0.28;
-    try { await this.currentMusic.play(); } catch { this.unlocked = false; }
+    try { await this.currentMusic.play(); } catch (error) { this.handlePlayRejection(error); }
   }
 
   private playingKeys(): string[] {

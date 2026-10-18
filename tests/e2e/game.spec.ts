@@ -119,14 +119,25 @@ test('pausing after an airborne burst stops effects and resumes a single loop', 
   });
   await page.keyboard.up('Space');
 
-  await page.locator('#hud [data-action="pause"]').click();
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
   await expect(page.locator('#pause-screen')).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
     const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
     return audio?.playing().filter((key) => ['engine', 'wind', 'rocket'].includes(key)) ?? [];
   })).toEqual([]);
 
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
   await page.locator('#pause-screen [data-action="resume"]').click();
+  await expect.poll(() => page.evaluate(() => {
+    const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
+    return audio?.playing().some((key) => key.startsWith('music-')) ?? false;
+  }), { timeout: 3000 }).toBe(true);
   await expect.poll(() => page.evaluate(() => {
     const audio = (window as Window & { __thrustshiftAudio?: { playing(): string[] } }).__thrustshiftAudio;
     return audio?.playing().filter((key) => key === 'engine' || key === 'wind') ?? [];
