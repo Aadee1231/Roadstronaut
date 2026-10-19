@@ -280,6 +280,15 @@ export class GameUI {
     const state = result.state;
     this.hide('hud');
     this.show('gameover-screen');
+    // Victory copy when the run hits the 1,000,000 win score.
+    const eyebrow = this.root.querySelector<HTMLElement>('#gameover-screen .panel-eyebrow');
+    const heading = this.root.querySelector<HTMLElement>('#gameover-screen h2');
+    if (eyebrow) eyebrow.textContent = state.won ? 'LEGEND STATUS' : 'RUN COMPLETE';
+    if (heading) {
+      heading.innerHTML = state.won
+        ? 'YOU BEAT THE ROAD.<br><em>1,000,000 POINTS.</em>'
+        : "THE ROAD ENDS.<br><em>THE LEGEND DOESN'T.</em>";
+    }
     this.fillResult(state);
     const newBest = state.stats.score > this.personalBest;
     if (newBest) {
@@ -392,6 +401,13 @@ export class GameUI {
             : event.type === 'suctionEngage' ? 'SUCTION ENGAGED'
               : event.type === 'railRecovery' ? 'AUTO-RECOVER'
               : event.type === 'thrusterBurst' ? 'THRUSTER BURST'
+              : event.type === 'vehicleFlip' ? '360 STUNT'
+              : event.type === 'stuntFlip' ? 'AIR-BURST FLIP'
+              : event.type === 'verticalRunApproach' ? 'VERTICAL RUN'
+              : event.type === 'verticalSuction' ? 'SUCTION ENGAGED'
+              : event.type === 'thrustersArmed' ? 'THRUSTERS ARMED'
+              : event.type === 'verticalRunLanded' ? 'VERTICAL RUN +1500'
+              : event.type === 'win' ? '1,000,000 — LEGEND STATUS'
                 : event.type === 'crash' ? 'RUN ENDED' : '');
       if (!label) return;
       this.addFeedback(label, landingFeedback?.perfect ?? false);

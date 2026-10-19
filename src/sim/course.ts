@@ -1,14 +1,15 @@
 import {
   CAR_LENGTH, GRAVITY, HAZARD_RECOVERY_SECONDS, JUMP_VELOCITY,
   LAUNCH_BOOST, START_SPEED,
-  SUPER_JUMP_VELOCITY, distanceAtTime, speedAtTime, timeAtDistance,
+  SUPER_JUMP_VELOCITY, VERTICAL_LAUNCH_BOOST, VERTICAL_LAUNCH_VY_CAP,
+  VRAMP_FIRST_AT_SECONDS, distanceAtTime, speedAtTime, timeAtDistance,
 } from './constants.js';
 import { atan2, clamp, max, min, sin } from './detmath.js';
 import { SeededRng } from './rng.js';
 
 export const BASE_Y = 520;
 
-export type SegmentKind = 'flat' | 'kicker' | 'launch' | 'slope' | 'platform' | 'gap' | 'quarter';
+export type SegmentKind = 'flat' | 'kicker' | 'launch' | 'slope' | 'platform' | 'gap' | 'quarter' | 'vramp';
 
 export interface CourseSegment {
   id: string;
@@ -29,9 +30,60 @@ export interface Hazard {
   safeJumpReach: number;
   minSpacing: number;
   motion?: { period: number; phase: number };
+  /** Individual parked vehicles that make up a 'vehicles' lineup hazard. */
+  vehicles?: VehicleUnit[];
+  /** True when this lineup is only clearable via the launch ramp placed before it. */
+  requiresRamp?: boolean;
 }
 
-export type HazardKind = 'barrier' | 'pylon' | 'crate' | 'gap' | 'beam' | 'piston';
+export type HazardKind = 'barrier' | 'pylon' | 'crate' | 'gap' | 'beam' | 'piston' | 'vehicles';
+
+export type VehicleKind = 'sedan' | 'sport' | 'pickup' | 'semi';
+
+export interface VehicleUnit {
+  /** Offset from the hazard's x where this vehicle starts. */
+  dx: number;
+  width: number;
+  height: number;
+  kind: VehicleKind;
+}
+
+export interface VerticalRunInfo {
+  /** x where the approach flat begins. */
+  x0: number;
+  /** x of the curved wall segment. */
+  rampX0: number;
+  /** x of the launch lip. */
+  lipX: number;
+  /** Height of the launch lip above BASE_Y baseline. */
+  lipY: number;
+  /** x where the safe landing flat begins (far edge of the pit). */
+  landingX0: number;
+  /** x where the protected landing flat ends. */
+  landingX1: number;
+  /** Surface height of the elevated landing deck below the lip. */
+  deckY: number;
+}
+
+export interface ObstacleBox {
+  x0: number;
+  x1: number;
+  top: number;
+  base: number;
+}
+
+/** Collision/near-miss boxes for a hazard. 'vehicles' lineups expose one box per parked vehicle. */
+export function obstacleBoxes(hazard: Hazard, height = hazard.height): ObstacleBox[] {
+  if (hazard.kind === 'vehicles' && hazard.vehicles) {
+    return hazard.vehicles.map((vehicle) => ({
+      x0: hazard.x + vehicle.dx,
+      x1: hazard.x + vehicle.dx + vehicle.width,
+      top: hazard.baseY - vehicle.height,
+      base: hazard.baseY,
+    }));
+  }
+  return [{ x0: hazard.x, x1: hazard.x + hazard.width, top: hazard.baseY - height, base: hazard.baseY }];
+}
 
 export interface CeilingSegment {
   id: string;
@@ -61,7 +113,7 @@ export function pistonHeight(hazard: Hazard, elapsed: number): number {
 
 type Pattern =
   | 'hill' | 'kicker' | 'obstacle' | 'gap' | 'platform' | 'double'
-  | 'obstacle-gap' | 'gap-obstacle' | 'barrier-beam' | 'narrow';
+  | 'obstacle-gap' | 'gap-obstacle' | 'barrier-beam' | 'narrow' | 'vehicles';
 type WeightedPattern = readonly [Pattern, number];
 
 const PLAIN_AIRTIME = -2 * JUMP_VELOCITY / GRAVITY;
@@ -71,12 +123,18 @@ const ONBOARDING_END_SECONDS = 12;
 const ONBOARDING_HAZARD_SPACING_SECONDS = 1.8;
 const FIRST_SUCTION_AT = 62;
 const SUCTION_INTERVAL = 30;
+const VRAMP_INTERVAL_MIN = 45;
+const VRAMP_INTERVAL_MAX = 70;
 
-function difficultyBand(time: number): 0 | 1 | 2 | 3 {
+type Band = 0 | 1 | 2 | 3 | 4 | 5;
+
+function difficultyBand(time: number): Band {
   if (time < 12) return 0;
   if (time < 30) return 1;
   if (time < 60) return 2;
-  return 3;
+  if (time < 150) return 3;
+  if (time < 300) return 4;
+  return 5;
 }
 
 export class Course {
@@ -85,11 +143,13 @@ export class Course {
   private readonly hazards: Hazard[] = [];
   private readonly ceilings: CeilingSegment[] = [];
   private readonly railZones: RailZone[] = [];
+  private readonly vruns: VerticalRunInfo[] = [];
   private x = 0;
   private y = BASE_Y;
   private protectedUntil = 0;
   private nextLaunchAt = distanceAtTime(10);
   private nextSuctionAt = distanceAtTime(FIRST_SUCTION_AT);
+  private nextVRunAt = distanceAtTime(VRAMP_FIRST_AT_SECONDS + 8);
 
   constructor(seed: number) {
     this.rng = new SeededRng(seed >>> 0);
@@ -146,7 +206,8 @@ export class Course {
 
   private appendBreather(): void {
     const time = timeAtDistance(this.x);
-    const breathSeconds = 1.6 - 0.9 * clamp(time / 90, 0, 1);
+    // Breathers shrink for the whole run: ~1.45s early, ~0.6s at 80s, ~0.28s deep game.
+    const breathSeconds = 1.45 - 0.85 * clamp(time / 80, 0, 1) - 0.32 * clamp((time - 80) / 420, 0, 1);
     const speed = this.speedAtX(this.x);
     const length = speed * breathSeconds;
     if (this.rng.next() < 0.42 && length >= speed * 0.7) {
@@ -170,16 +231,27 @@ export class Course {
     return patterns[patterns.length - 1][0];
   }
 
-  private choosePattern(band: 0 | 1 | 2 | 3, time: number): Pattern {
+  private choosePattern(band: Band, time: number): Pattern {
     if (band === 0) {
-      return this.weightedPattern([['hill', 28], ['kicker', 32], ['obstacle', 40]]);
+      return this.weightedPattern([['hill', 28], ['kicker', 32], ['obstacle', 32], ['vehicles', 9]]);
     }
     if (band === 1) {
-      return this.weightedPattern([['hill', 14], ['kicker', 12], ['obstacle', 36], ['gap', 38]]);
+      return this.weightedPattern([['hill', 14], ['kicker', 12], ['obstacle', 30], ['gap', 32], ['vehicles', 14]]);
+    }
+    if (band >= 4) {
+      // Deep game: hills and breather platforms fade out, hazards and car
+      // rows take over, and combos chain back to back at cruise speed.
+      return this.weightedPattern([
+        ['hill', band === 4 ? 4 : 2], ['obstacle', 20], ['gap', 16],
+        ['platform', band === 4 ? 8 : 4], ['double', band === 4 ? 22 : 24],
+        ['obstacle-gap', band === 4 ? 20 : 22], ['gap-obstacle', band === 4 ? 10 : 14],
+        ['narrow', band === 4 ? 14 : 16], ['barrier-beam', band === 4 ? 10 : 12],
+        ['vehicles', band === 4 ? 30 : 36],
+      ]);
     }
     if (band === 2) {
       const patterns: WeightedPattern[] = [
-        ['hill', 10], ['obstacle', 25], ['gap', 21], ['platform', 26], ['kicker', 8],
+        ['hill', 10], ['obstacle', 21], ['gap', 18], ['platform', 22], ['kicker', 8], ['vehicles', 18],
       ];
       if (time >= 45) patterns.push(['obstacle-gap', 10]);
       if (time >= 30) {
@@ -188,8 +260,8 @@ export class Course {
       return this.weightedPattern(patterns);
     }
     return this.weightedPattern([
-      ['hill', 8], ['obstacle', 16], ['gap', 14], ['platform', 17],
-      ['double', 17], ['obstacle-gap', 16], ['narrow', 12],
+      ['hill', 8], ['obstacle', 14], ['gap', 12], ['platform', 15],
+      ['double', 16], ['obstacle-gap', 15], ['narrow', 12], ['vehicles', 22],
     ]);
   }
 
@@ -198,6 +270,14 @@ export class Course {
     if (this.x < OPENING_RUNWAY_DISTANCE) {
       if (this.rng.next() < 0.5) this.generateHill();
       else this.generateKicker();
+      this.appendBreather();
+      return;
+    }
+
+    if (this.x >= this.nextVRunAt) {
+      this.generateVerticalRun();
+      const nextTime = timeAtDistance(this.x) + this.rng.range(VRAMP_INTERVAL_MIN, VRAMP_INTERVAL_MAX);
+      this.nextVRunAt = distanceAtTime(nextTime);
       this.appendBreather();
       return;
     }
@@ -250,6 +330,9 @@ export class Course {
         break;
       case 'narrow':
         this.generateNarrowLanding();
+        break;
+      case 'vehicles':
+        this.generateVehicleLineup(band);
         break;
     }
     this.appendBreather();
@@ -515,6 +598,212 @@ export class Course {
     }
   }
 
+  private generateVerticalRun(): void {
+    const speed = this.speedAtX(this.x);
+    if (this.y < BASE_Y - 6) {
+      this.appendSegment('slope', speed * 0.3, BASE_Y);
+    }
+    const approachStart = this.x;
+    // Charge strip: visible approach pad before the structure.
+    this.appendFlat(speed * 1.15);
+
+    const height = clamp(speed * 0.85, 470, 830);
+    const width = height * 0.5;
+    const rampX0 = this.x;
+    this.appendSegment('vramp', width, this.y - height);
+    const lipX = this.x;
+    const lipY = this.y;
+
+    // Flight corridor: a deep pit under the arc (falling in is a real crash),
+    // then an elevated landing deck below the lip — the launched car arcs over
+    // the chasm and touches down on the high platform like a roof deck.
+    // Lip exit speed ≈ surface speed + thruster boost, capped so the deck
+    // impact stays under the crash threshold even at 230mph.
+    const launchVy = min(speed - VERTICAL_LAUNCH_BOOST, VERTICAL_LAUNCH_VY_CAP);
+    const deckDrop = clamp(speed * 0.35, 260, 480);
+    const deckY = lipY + deckDrop;
+    const flightSeconds = (launchVy + Math.sqrt(launchVy * launchVy + 2 * GRAVITY * deckDrop)) / GRAVITY;
+    // The deck begins a beat before the arc crosses deck height so the car —
+    // rotating mid-somersault, wheels sweeping low — always arrives above its
+    // top edge instead of clipping the rim.
+    const deckX0 = lipX + speed * (flightSeconds - 0.22);
+    this.appendSegment('gap', deckX0 - this.x, deckY);
+    this.addGapAt(lipX, deckX0 - lipX, BASE_Y);
+
+    // Deck runout: enough room to land, roll out, then descend back to grade.
+    const deckLength = speed * 0.9;
+    this.appendSegment('platform', deckLength, deckY);
+    const landingX0 = deckX0;
+    this.appendSegment('slope', speed * 0.45, BASE_Y);
+    this.appendFlat(speed * 0.3);
+    this.protectedUntil = this.x;
+
+    this.vruns.push({
+      x0: approachStart,
+      rampX0,
+      lipX,
+      lipY,
+      landingX0,
+      landingX1: this.x,
+      deckY,
+    });
+  }
+
+  private vehicleUnit(kind: VehicleKind, band: Band): VehicleUnit {
+    switch (kind) {
+      case 'sport':
+        return { dx: 0, width: this.rng.range(150, 168), height: this.rng.range(42, 50), kind };
+      case 'pickup':
+        return { dx: 0, width: this.rng.range(172, 195), height: this.rng.range(60, 68), kind };
+      case 'semi':
+        return { dx: 0, width: this.rng.range(315, 360), height: this.rng.range(88, 102), kind };
+      default: {
+        const tall = band >= 2 ? 58 : 54;
+        return { dx: 0, width: this.rng.range(160, 184), height: this.rng.range(48, tall), kind: 'sedan' };
+      }
+    }
+  }
+
+  private addVehicleLineupAt(x: number, surfaceY: number, units: VehicleUnit[], requiresRamp: boolean): Hazard {
+    let cursor = 0;
+    for (const unit of units) {
+      unit.dx = cursor;
+      cursor += unit.width + this.rng.range(4, 14);
+    }
+    const span = units[units.length - 1]!.dx + units[units.length - 1]!.width;
+    const hazard: Hazard = {
+      id: `hazard-${this.hazards.length}`,
+      kind: 'vehicles',
+      x,
+      width: span,
+      height: units.reduce((top, unit) => max(top, unit.height), 0),
+      baseY: surfaceY,
+      safeJumpReach: this.reachAtX(x),
+      minSpacing: this.spacingAtX(x),
+      vehicles: units,
+      requiresRamp,
+    };
+    this.hazards.push(hazard);
+    return hazard;
+  }
+
+  private generateVehicleLineup(band: Band): void {
+    const speed = this.speedAtX(this.x);
+    const jumpV = -JUMP_VELOCITY;
+    // Descending-side time where a plain jump loses clearance above height h:
+    // jumpV*t - GRAVITY/2 t^2 = h + body margin. Solve for the second root.
+    const clearanceTime = (h: number): number => {
+      const disc = jumpV * jumpV - 2 * GRAVITY * (h + 14);
+      return disc <= 0 ? 0 : (jumpV + Math.sqrt(disc)) / GRAVITY;
+    };
+    // A jump taken ~0.30s before the lineup clears vehicle faces up to ~85 tall
+    // and lands ~0.57*speed past the edge; the span must end before clearance
+    // at the tallest unit is lost, with margin for early presses.
+    const jumpableSpan = (h: number): number => (clearanceTime(h) - 0.31) * speed - 90;
+
+    // Ramp-assisted stunts stay spectacular but rare enough that cars on the
+    // road — hoppable rows and solo parked cars — are the common case deep in.
+    const wantsSemi = band >= 1 && this.rng.next() < (band >= 4 ? 0.28 : band >= 2 ? 0.38 : 0.15);
+    const wantsShowcase = band >= 2 && this.rng.next() < (band >= 4 ? 0.22 : band === 3 ? 0.32 : 0.16);
+    const wantsTrio = band >= 1 && this.rng.next() < (band >= 4 ? 0.32 : 0.5);
+
+    const rampAssisted = wantsSemi || wantsShowcase || wantsTrio;
+
+    if (!rampAssisted) {
+      // Plain rows: singles early, mixed rows deep — a lone parked car is the
+      // bread-and-butter hop, so solos stay common even at max difficulty.
+      const count = band === 0 ? 1
+        : this.rng.next() < 0.42 ? 1
+          : this.rng.int(2, band >= 4 ? 6 : band >= 3 ? 5 : band >= 2 ? 4 : 3);
+      const units: VehicleUnit[] = [];
+      for (let index = 0; index < count; index += 1) {
+        // Multi-car rows favor low sports cars so the tail stays clearable.
+        const roll = this.rng.next();
+        const kind: VehicleKind = count > 1
+          ? (roll < 0.6 ? 'sport' : roll < 0.9 ? 'sedan' : 'pickup')
+          : (roll < 0.45 ? 'sedan' : roll < 0.8 ? 'sport' : 'pickup');
+        units.push(this.vehicleUnit(kind, band));
+      }
+      const spanOf = (): number => units.reduce((sum, unit) => sum + unit.width + 10, 0) - 10;
+      // Trim trailing vehicles until the row fits the physics budget.
+      while (units.length > 1) {
+        const maxH = units.reduce((top, unit) => max(top, unit.height), 0);
+        if (spanOf() <= jumpableSpan(maxH)) break;
+        units.pop();
+      }
+      if (units.length === 0) {
+        this.appendFlat(speed * 0.4);
+        return;
+      }
+      const maxH = units.reduce((top, unit) => max(top, unit.height), 0);
+      let budget = jumpableSpan(maxH);
+      if (units.length === 1 && units[0]!.width > budget) {
+        units[0]!.width = max(140, budget - 10);
+      }
+      // A single vehicle too tall to bound still gets a face-clearable height.
+      if (budget < 140 && units.length === 1) {
+        units[0]!.height = min(units[0]!.height, 46);
+        units[0]!.width = min(units[0]!.width, 160);
+        budget = jumpableSpan(units[0]!.height);
+        if (budget < 140) {
+          this.appendFlat(speed * 0.4);
+          return;
+        }
+      }
+      const lineupX = this.nextHazardX(this.x + speed * 0.28);
+      this.appendFlat(lineupX - this.x);
+      const hazard = this.addVehicleLineupAt(lineupX, this.y, units, false);
+      this.appendFlat(hazard.width + speed * 0.34);
+      return;
+    }
+
+    // Stunt lineup: a launch ramp carries the car over a row it could never
+    // plain-jump. Arc math mirrors generateLaunch so the assist is guaranteed.
+    const rampX = this.nextHazardX(this.x + speed * 0.3);
+    this.appendFlat(rampX - this.x);
+    const startY = this.y;
+    const rampLength = speed * 0.42;
+    const rise = min(200, max(125, speed * 0.25));
+    this.appendSegment('launch', rampLength, startY - rise);
+    const lipX = this.x;
+    const lipY = this.y;
+
+    // Lead-in flat, then the lineup inside the assisted arc. The flat sits at
+    // lip height, so the car returns to ground level after ~2*launchV/GRAVITY.
+    this.appendFlat(speed * 0.38);
+    const lineupX = this.x;
+    const lipSpeed = this.speedAtX(lineupX);
+    const lipSlope = atan2(lipY - startY, rampLength);
+    const launchV = -(lipSpeed * sin(lipSlope) + LAUNCH_BOOST);
+    const flightDistance = lipSpeed * 2 * launchV / GRAVITY;
+    // Keep the lineup inside the high part of the arc: its far edge must stay
+    // ahead of the descent where clearance dips below vehicle height.
+    const lineupBudget = 0.8 * flightDistance - (lineupX - lipX);
+
+    const units: VehicleUnit[] = [];
+    const carCount = wantsShowcase ? this.rng.int(4, 6) : wantsSemi ? this.rng.int(1, 3) : this.rng.int(3, 4);
+    for (let index = 0; index < carCount; index += 1) {
+      const roll = this.rng.next();
+      const kind: VehicleKind = roll < 0.4 ? 'sport' : roll < 0.8 ? 'sedan' : 'pickup';
+      units.push(this.vehicleUnit(kind, band));
+    }
+    if (wantsSemi || (wantsShowcase && this.rng.next() < 0.5)) {
+      units.push(this.vehicleUnit('semi', band));
+    }
+    // Trim leading cars until the row fits the budget (semi stays at the end).
+    while (units.length > 1 && units.reduce((sum, unit) => sum + unit.width + 10, 0) > lineupBudget) {
+      units.shift();
+    }
+    const hazard = this.addVehicleLineupAt(lineupX, this.y, units, true);
+    const landingLength = flightDistance + lipSpeed * 0.35;
+    this.appendFlat(max(hazard.width + speed * 0.4, landingLength - (this.x - lipX)));
+    if (this.y < BASE_Y - 6) {
+      this.appendSegment('slope', lipSpeed * 0.4, BASE_Y);
+      this.appendFlat(speed * 0.3);
+    }
+    this.protectedUntil = this.x;
+  }
+
   private generateSuctionSection(): void {
     const speed = this.speedAtX(this.x);
     const startY = this.y;
@@ -566,11 +855,31 @@ export class Course {
     if (segment.kind === 'gap') return null;
     const width = segment.x1 - segment.x0;
     const t = clamp((x - segment.x0) / width, 0, 1);
+    if (segment.kind === 'vramp') {
+      // Quarter-circle hook: dead-flat entry curling to a fully vertical lip,
+      // like a stunt ramp that sweeps the car up a wall.
+      const rise = segment.y1 - segment.y0;
+      const tc = min(t, 0.9995);
+      const eased = 1 - Math.sqrt(1 - tc * tc);
+      const dyDt = rise * tc / Math.sqrt(1 - tc * tc);
+      return {
+        y: segment.y0 + rise * eased,
+        slope: atan2(dyDt, width),
+        segment,
+      };
+    }
     return {
       y: segment.y0 + (segment.y1 - segment.y0) * t,
       slope: atan2(segment.y1 - segment.y0, width),
       segment,
     };
+  }
+
+  verticalRunsInRange(x0: number, x1: number): VerticalRunInfo[] {
+    const startX = min(x0, x1);
+    const endX = max(x0, x1);
+    this.ensureThrough(endX);
+    return this.vruns.filter((run) => run.landingX1 >= startX && run.x0 <= endX);
   }
 
   hazardsAhead(x: number, distance: number): Hazard[] {

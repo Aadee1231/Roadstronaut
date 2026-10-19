@@ -8,13 +8,14 @@ import {
   NEAR_MISS_CLEARANCE, PERFECT_LIMIT, ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND,
   RECOVERY_ANGULAR_SPEED, RECOVERY_MARGIN, RECOVERY_TRIGGER_OFF, SUCTION_ALIGN, SUCTION_POINTS_PER_SECOND,
   SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
+  VERTICAL_LAUNCH_BOOST, VERTICAL_LAUNCH_VY_CAP, VERTICAL_RUN_BONUS, WIN_SCORE,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
 } from './constants.js';
 import {
-  BASE_Y, createCourse, pistonHeight, type CeilingSegment, type Course, type Surface,
+  BASE_Y, createCourse, obstacleBoxes, pistonHeight, type CeilingSegment, type Course, type Surface,
 } from './course.js';
 import { atan2, clamp, cos, max, min, normalizeAngle, sin } from './detmath.js';
-import { awardLanding, awardNearMiss, createRunStats, type LandingQuality, type RunStats } from './scoring.js';
+import { awardLanding, awardNearMiss, comboMultiplier, createRunStats, type LandingQuality, type RunStats } from './scoring.js';
 
 export type SimEvent =
   | { type: 'jump' | 'superLaunch' | 'takeoff' | 'energyEmpty' | 'milestone' }
@@ -29,6 +30,15 @@ export type SimEvent =
   | { type: 'suctionRelease'; reason: 'end' | 'empty' }
   | { type: 'suctionBonus'; seconds: number; points: number }
   | { type: 'nearMiss'; hazardId: string }
+  | { type: 'verticalRunApproach' }
+  | { type: 'verticalSuction' }
+  | { type: 'thrustersArmed' }
+  | { type: 'verticalLaunch' }
+  | { type: 'verticalRunLanded'; points: number }
+  | { type: 'vehicleFlip' }
+  | { type: 'stuntFlip' }
+  | { type: 'airBurst' }
+  | { type: 'win' }
   | { type: 'crash'; reason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' };
 
 export interface SimulationState {
@@ -49,7 +59,10 @@ export interface SimulationState {
   rotating: boolean;
   recovering: boolean;
   crashed: boolean;
-  crashReason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' | null;
+  crashReason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' | 'won' | null;
+  /** Barrel-roll angle (radians): cosmetic 3D roll driven by scripted spins. */
+  roll: number;
+  won: boolean;
   elapsed: number;
   airtime: number;
   flips: number;
@@ -98,6 +111,25 @@ export class Simulation {
   private recovering = false;
   private recoveryTarget = 0;
   private railPhase = false;
+  private verticalRunArmed = false;
+  private announcedVRunLip = -1;
+  private thrustersArmedAt = -1;
+  /** A scripted air-burst flip (vertical-run corkscrew or vehicle-lineup roll).
+   * endAngle is the pitch the car must reach at touchdown and rollTarget the
+   * barrel-roll angle it finishes at; deckY pins the landing surface when it
+   * can't be read ahead (e.g. over a pit). playerInitiated marks spins the
+   * user fired with a jump press versus the survival auto-engage. */
+  private scriptedSpin: {
+    endAngle: number;
+    deckY: number | null;
+    rollTarget: number;
+    playerInitiated: boolean;
+  } | null = null;
+  /** Vertical-run flip waiting on a jump press; auto-engages near landing so
+   * an unpressed run still rights itself instead of dying nose-first. */
+  private pendingVrunFlip: { endAngle: number; deckY: number | null } | null = null;
+  private flipPuffTimer = 0;
+  private flippedVehicleHazards = new Set<string>();
 
   constructor(seed: number) {
     this.course = createCourse(seed);
@@ -121,6 +153,8 @@ export class Simulation {
       recovering: false,
       crashed: false,
       crashReason: null,
+      roll: 0,
+      won: false,
       elapsed: 0,
       airtime: 0,
       flips: 0,
@@ -188,7 +222,31 @@ export class Simulation {
       const previousSurface = this.course.surfaceAt(this.previousX);
       const surface = this.course.surfaceAt(state.x);
       if (surface) this.syncGroundPose(surface);
-      if (newPress && surface && surface.segment.kind !== 'quarter') {
+      this.stepVerticalRun(previousSurface, surface, dt);
+      if (
+        previousSurface?.segment.kind === 'vramp'
+        && (!surface || surface.segment.kind !== 'vramp')
+      ) {
+        // Lip of the vertical run: the suction lets go and the compressed-air
+        // thruster fires, adding a tuned impulse to the surface momentum. The
+        // corkscrew flip waits on a jump press; if the player never presses it
+        // auto-engages just before touchdown so the run can't kill them.
+        this.leaveGround();
+        // Cap the exit speed: past ~1400 u/s the deck impact would pass the
+        // crash threshold, so the thruster absorbs the extra surface momentum.
+        state.vy = Math.max(
+          state.speed * sin(previousSurface.slope) + VERTICAL_LAUNCH_BOOST,
+          -VERTICAL_LAUNCH_VY_CAP,
+        );
+        this.verticalRunArmed = true;
+        const run = this.course.verticalRunsInRange(previousSurface.segment.x0, state.x + 20)
+          .find((candidate) => candidate.lipX === previousSurface.segment.x1);
+        this.pendingVrunFlip = {
+          endAngle: Math.floor(state.angle / (Math.PI * 2)) * Math.PI * 2,
+          deckY: run?.deckY ?? null,
+        };
+        this.events.push({ type: 'verticalLaunch' });
+      } else if (newPress && surface && surface.segment.kind !== 'quarter' && surface.segment.kind !== 'vramp') {
         const launchWindow = surface.segment.kind === 'launch'
           && state.x >= surface.segment.x1 - (surface.segment.x1 - surface.segment.x0) * LAUNCH_WINDOW_FRACTION;
         state.grounded = false;
@@ -210,6 +268,9 @@ export class Simulation {
           state.vy = JUMP_VELOCITY;
           this.events.push({ type: 'jump' });
         }
+        // A jump whose arc sails over parked cars becomes an air-burst barrel
+        // roll — the press that launches it is the press that stunts it.
+        this.tryStartStuntFlip();
       } else if (!surface) {
         this.leaveGround();
         if (previousSurface?.segment.kind === 'launch') {
@@ -233,7 +294,10 @@ export class Simulation {
       this.maybeStartRailRecovery();
       if (!this.recovering && newPress) {
         this.airbornePressEligible = true;
-        if (state.burstsLeft > 0 && state.burstCooldown === 0 && state.energy >= BURST_ENERGY) {
+        // A mid-air press arms a stunt flip first (the vertical-run corkscrew
+        // or a barrel roll over cars); only if nothing arms does it burst.
+        if (!this.tryStartStuntFlip()
+          && state.burstsLeft > 0 && state.burstCooldown === 0 && state.energy >= BURST_ENERGY) {
           state.energy -= BURST_ENERGY;
           state.burstsLeft -= 1;
           state.burstCooldown = BURST_COOLDOWN;
@@ -250,33 +314,38 @@ export class Simulation {
       if (this.recovering) {
         this.stepRailRecovery(dt);
       } else {
-        // A flip that was started always finishes: while a flip is in progress
-        // the car keeps rotating even after the tank empties, then coasts the
-        // last stretch like a released press so it lands on the flip boundary.
-        // Only powered flips refund energy, so an empty tank can't chain flips.
-        const powered = state.energy >= ROTATION_ENERGY_PER_SECOND * dt;
-        if (powered) {
-          // Boundary the in-progress flip is heading for; frozen while unpowered
-          // so momentum may finish that flip and nothing more.
-          this.unpoweredFlipLimit = (Math.floor(this.flipRotation / (Math.PI * 2)) + 1) * Math.PI * 2;
-        }
-        const freeFinishRemaining = this.unpoweredFlipLimit - this.flipRotation;
-        const freeAccel = freeFinishRemaining > FLIP_COAST_RADIANS;
-        const canRotate = held && this.airbornePressEligible && (powered || freeAccel);
-        if (canRotate) {
-          state.rotating = powered;
-          state.angularVelocity = min(MAX_ANGULAR_SPEED, state.angularVelocity + ROTATION_ACCEL * dt);
-          if (powered) {
-            state.energy = max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
-            if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
-          } else {
-            if (!this.freeFinishUsed) this.events.push({ type: 'energyEmpty' });
-            this.freeFinishUsed = true;
-          }
+        if (!this.scriptedSpin) this.maybeAutoStartVrunFlip();
+        if (this.scriptedSpin) {
+          this.stepScriptedSpin(dt);
         } else {
-          state.angularVelocity *= RELEASE_DAMPING_PER_STEP;
-          if (Math.abs(normalizeAngle(state.angle)) < 0.55) {
-            state.angularVelocity += -normalizeAngle(state.angle) * 0.35 * dt;
+          // A flip that was started always finishes: while a flip is in progress
+          // the car keeps rotating even after the tank empties, then coasts the
+          // last stretch like a released press so it lands on the flip boundary.
+          // Only powered flips refund energy, so an empty tank can't chain flips.
+          const powered = state.energy >= ROTATION_ENERGY_PER_SECOND * dt;
+          if (powered) {
+            // Boundary the in-progress flip is heading for; frozen while unpowered
+            // so momentum may finish that flip and nothing more.
+            this.unpoweredFlipLimit = (Math.floor(this.flipRotation / (Math.PI * 2)) + 1) * Math.PI * 2;
+          }
+          const freeFinishRemaining = this.unpoweredFlipLimit - this.flipRotation;
+          const freeAccel = freeFinishRemaining > FLIP_COAST_RADIANS;
+          const canRotate = held && this.airbornePressEligible && (powered || freeAccel);
+          if (canRotate) {
+            state.rotating = powered;
+            state.angularVelocity = min(MAX_ANGULAR_SPEED, state.angularVelocity + ROTATION_ACCEL * dt);
+            if (powered) {
+              state.energy = max(0, state.energy - ROTATION_ENERGY_PER_SECOND * dt);
+              if (state.energy === 0) this.events.push({ type: 'energyEmpty' });
+            } else {
+              if (!this.freeFinishUsed) this.events.push({ type: 'energyEmpty' });
+              this.freeFinishUsed = true;
+            }
+          } else {
+            state.angularVelocity *= RELEASE_DAMPING_PER_STEP;
+            if (Math.abs(normalizeAngle(state.angle)) < 0.55) {
+              state.angularVelocity += -normalizeAngle(state.angle) * 0.35 * dt;
+            }
           }
         }
         state.angle += state.angularVelocity * dt;
@@ -304,7 +373,195 @@ export class Simulation {
       this.lastMilestone = Math.floor(state.elapsed / 10);
       this.events.push({ type: 'milestone' });
     }
+    if (!state.crashed && !state.won && state.stats.score >= WIN_SCORE) this.win();
     this.previousHeld = held;
+  }
+
+  private stepVerticalRun(previous: Surface | null, surface: Surface | null, dt: number): void {
+    const state = this.state;
+    if (surface?.segment.kind === 'vramp') {
+      if (previous?.segment.kind !== 'vramp') {
+        this.events.push({ type: 'verticalSuction' });
+      }
+      // Suction holds the car to the wall no matter what: the meter pins high
+      // so it reads as engaged, and the climb never depends on stored energy.
+      state.fan = max(state.fan, 70);
+      const segment = surface.segment;
+      const t = (state.x - segment.x0) / (segment.x1 - segment.x0);
+      if (t >= 0.72 && this.thrustersArmedAt !== segment.x0) {
+        this.thrustersArmedAt = segment.x0;
+        this.events.push({ type: 'thrustersArmed' });
+      }
+      state.fanRailVisible = true;
+      return;
+    }
+    const ahead = this.course.verticalRunsInRange(state.x, state.x + state.speed * 2.6)
+      .find((run) => run.lipX !== this.announcedVRunLip && state.x >= run.x0);
+    if (ahead) {
+      this.announcedVRunLip = ahead.lipX;
+      this.events.push({ type: 'verticalRunApproach' });
+    }
+  }
+
+  /** Ballistic estimate of seconds until the car meets the ground, refined
+   * against the surface under the projected landing point. deckY overrides
+   * the read for scripted spins over a pit where there is no surface. */
+  private estimateLandingTime(deckY: number | null): { t: number; slope: number } {
+    const state = this.state;
+    let t = max(FIXED_DT, -2 * state.vy / GRAVITY);
+    let slope = 0;
+    for (let iteration = 0; iteration < 3; iteration += 1) {
+      const surface = deckY === null ? this.course.surfaceAt(state.x + state.vx * t) : null;
+      const refY = deckY ?? surface?.y;
+      if (refY === undefined || refY === null) break;
+      const drop = refY - state.y;
+      const discriminant = state.vy * state.vy + 2 * GRAVITY * drop;
+      if (discriminant <= 0) break;
+      const next = max(FIXED_DT, (-state.vy + Math.sqrt(discriminant)) / GRAVITY);
+      slope = surface?.slope ?? 0;
+      if (Math.abs(next - t) < 0.01 || deckY !== null) {
+        t = next;
+        break;
+      }
+      t = next;
+    }
+    return { t, slope };
+  }
+
+  /** Player-initiated stunt flips. A jump press while airborne (or the press
+   * that launches a jump) fires the scripted flip if the arc supports it:
+   * the vertical-run corkscrew when a pending lip flip exists, else a barrel
+   * roll when the arc sails over parked cars. Returns whether a spin armed —
+   * callers skip the thruster burst on a true return so one press does one
+   * thing. */
+  private tryStartStuntFlip(): boolean {
+    const state = this.state;
+    if (this.scriptedSpin || state.grounded || state.inverted) return false;
+    if (this.pendingVrunFlip) {
+      const pending = this.pendingVrunFlip;
+      this.pendingVrunFlip = null;
+      this.scriptedSpin = {
+        ...pending,
+        rollTarget: state.roll + Math.PI * 2,
+        playerInitiated: true,
+      };
+      this.events.push({ type: 'stuntFlip' });
+      return true;
+    }
+    return this.tryStartVehicleRoll();
+  }
+
+  /** Barrel roll over a vehicle lineup: the car rolls once around its long
+   * axis, like a corkscrew over parked cars. A roll never pitches the car
+   * nose-down, so the collision envelope stays small — it only has to clear
+   * each roof it crosses with the same margin the un-rolled car needs. */
+  private tryStartVehicleRoll(): boolean {
+    const state = this.state;
+    if (this.verticalRunArmed) return false;
+    const estimate = this.estimateLandingTime(null);
+    if (estimate.t < 0.55) return false;
+    const hazards = this.course
+      .hazardsAhead(state.x - CAR_LENGTH / 2, state.vx * estimate.t + CAR_LENGTH)
+      .filter((hazard) => hazard.kind === 'vehicles' && !this.flippedVehicleHazards.has(hazard.id));
+    for (const hazard of hazards) {
+      if (hazard.x + hazard.width < state.x - CAR_LENGTH / 2) continue;
+      // Rolling keeps the car near-level, so the swept envelope is the normal
+      // wheel depth rather than the tumbling length — a hop that clears the
+      // roofs honestly fits the roll.
+      const extent = WHEEL_RADIUS + WHEEL_VERTICAL_OFFSET + 8;
+      let safe = true;
+      for (const box of obstacleBoxes(hazard, hazard.height)) {
+        const tIn = (box.x0 - state.x - CAR_LENGTH / 2) / state.vx;
+        const tOut = (box.x1 - state.x + CAR_LENGTH / 2) / state.vx;
+        for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+          const tc = tIn + (tOut - tIn) * f;
+          if (tc <= 0 || tc >= estimate.t) continue;
+          const pathY = state.y + state.vy * tc + GRAVITY / 2 * tc * tc;
+          if (box.top - (pathY + extent) < 10) {
+            safe = false;
+            break;
+          }
+        }
+        if (!safe) break;
+      }
+      if (!safe) continue;
+      this.flippedVehicleHazards.add(hazard.id);
+      this.scriptedSpin = {
+        endAngle: state.angle + normalizeAngle(estimate.slope - state.angle),
+        deckY: null,
+        rollTarget: state.roll + Math.PI * 2,
+        playerInitiated: true,
+      };
+      this.events.push({ type: 'vehicleFlip' });
+      return true;
+    }
+    return false;
+  }
+
+  /** Survival assist: an unpressed vertical-run flip engages just before the
+   * arc meets the deck so the car still rights itself — no stunt credit. */
+  private maybeAutoStartVrunFlip(): void {
+    const state = this.state;
+    if (!this.pendingVrunFlip || state.inverted) return;
+    const estimate = this.estimateLandingTime(this.pendingVrunFlip.deckY);
+    if (estimate.t > 0.7) return;
+    const pending = this.pendingVrunFlip;
+    this.pendingVrunFlip = null;
+    this.scriptedSpin = {
+      ...pending,
+      rollTarget: state.roll + Math.PI * 2,
+      playerInitiated: false,
+    };
+  }
+
+  /** Drive pitch to the scripted endAngle and roll to rollTarget exactly when
+   * the arc meets the ground, throttling both as touchdown approaches. Roll
+   * counts toward flip progress — a finished barrel roll scores a flip. */
+  private stepScriptedSpin(dt: number): void {
+    const state = this.state;
+    const spin = this.scriptedSpin!;
+    const estimate = this.estimateLandingTime(spin.deckY);
+    const remaining = spin.endAngle - state.angle;
+    state.angularVelocity = clamp(
+      remaining / estimate.t,
+      -MAX_ANGULAR_SPEED * 1.4,
+      MAX_ANGULAR_SPEED * 1.4,
+    );
+    const rollRemaining = spin.rollTarget - state.roll;
+    const rollRate = clamp(
+      rollRemaining / estimate.t,
+      -MAX_ANGULAR_SPEED * 1.4,
+      MAX_ANGULAR_SPEED * 1.4,
+    );
+    state.roll += rollRate * dt;
+    if (spin.playerInitiated) this.flipRotation += rollRate * dt;
+    if (estimate.t <= FIXED_DT * 5) {
+      if (spin.playerInitiated) this.flipRotation += spin.rollTarget - state.roll;
+      state.angle = spin.endAngle;
+      state.roll = spin.rollTarget;
+    }
+    const fullFlips = Math.floor(this.flipRotation / (Math.PI * 2));
+    if (fullFlips > state.flips) {
+      // Scripted rolls land like momentum flips: they score but pay no energy refund.
+      state.flips = fullFlips;
+      this.events.push({ type: 'flipComplete', count: state.flips });
+    }
+    state.rotating = true;
+    this.flipPuffTimer -= dt;
+    if (this.flipPuffTimer <= 0) {
+      this.flipPuffTimer = 0.09;
+      this.events.push({ type: 'airBurst' });
+    }
+  }
+
+  private settleVerticalRun(): void {
+    if (!this.verticalRunArmed) return;
+    this.verticalRunArmed = false;
+    const state = this.state;
+    const points = Math.floor(VERTICAL_RUN_BONUS * comboMultiplier(state.combo) + 0.5);
+    state.stats.score += points;
+    state.stats.stunts += 1;
+    this.events.push({ type: 'verticalRunLanded', points });
   }
 
   private wheelPoint(longitudinalOffset: number): WheelPoint {
@@ -421,7 +678,7 @@ export class Simulation {
 
   private maybeStartRailRecovery(): void {
     const state = this.state;
-    if (state.grounded || this.recovering) return;
+    if (state.grounded || this.recovering || this.scriptedSpin) return;
     const railZone = this.course.railZoneAt(state.x);
     if (railZone) this.railPhase = true;
     if (!this.railPhase && !railZone) return;
@@ -600,6 +857,10 @@ export class Simulation {
 
     state.grounded = true;
     state.vy = 0;
+    state.roll = 0;
+    this.scriptedSpin = null;
+    this.pendingVrunFlip = null;
+    this.settleVerticalRun();
     if (recovering) {
       state.angle = surface.slope;
       state.angularVelocity = 0;
@@ -685,10 +946,14 @@ export class Simulation {
           this.events.push({ type: 'nearMiss', hazardId: hazard.id });
         }
       } else {
-        const distancePast = state.x - (hazard.x + hazard.width);
         const height = hazard.kind === 'piston' ? pistonHeight(hazard, state.elapsed) : hazard.height;
-        const clearance = hazard.baseY - height - this.bodyBottom();
-        if (distancePast >= 0 && distancePast < NEAR_MISS_CLEARANCE && clearance >= 0 && clearance < NEAR_MISS_CLEARANCE) {
+        const missed = obstacleBoxes(hazard, height).some((box) => {
+          const distancePast = state.x - box.x1;
+          const clearance = box.top - this.bodyBottom();
+          return distancePast >= 0 && distancePast < NEAR_MISS_CLEARANCE
+            && clearance >= 0 && clearance < NEAR_MISS_CLEARANCE;
+        });
+        if (missed) {
           state.nearMissIds.push(hazard.id);
           state.energy = min(ENERGY_MAX, state.energy + 10);
           awardNearMiss(state.stats, state.combo);
@@ -704,16 +969,16 @@ export class Simulation {
     for (const hazard of hazards) {
       if (hazard.kind === 'gap') continue;
       const height = hazard.kind === 'piston' ? pistonHeight(hazard, state.elapsed) : hazard.height;
-      const top = hazard.baseY - height;
-      const right = hazard.x + hazard.width;
-      for (const circle of this.bodyCircles()) {
-        const nearestX = clamp(circle.x, hazard.x, right);
-        const nearestY = clamp(circle.y, top, hazard.baseY);
-        const dx = circle.x - nearestX;
-        const dy = circle.y - nearestY;
-        if (dx * dx + dy * dy < circle.radius * circle.radius) {
-          this.crash('obstacle');
-          return;
+      for (const box of obstacleBoxes(hazard, height)) {
+        for (const circle of this.bodyCircles()) {
+          const nearestX = clamp(circle.x, box.x0, box.x1);
+          const nearestY = clamp(circle.y, box.top, box.base);
+          const dx = circle.x - nearestX;
+          const dy = circle.y - nearestY;
+          if (dx * dx + dy * dy < circle.radius * circle.radius) {
+            this.crash('obstacle');
+            return;
+          }
         }
       }
     }
@@ -730,9 +995,25 @@ export class Simulation {
     this.state.crashed = true;
     this.state.crashReason = reason;
     this.state.combo = 0;
+    this.scriptedSpin = null;
+    this.pendingVrunFlip = null;
     this.clearRailRecovery();
     this.clearRailPhase();
     this.events.push({ type: 'crash', reason });
+  }
+
+  /** One million points ends the run as a win — the car coasts out on a
+   * victory flash instead of a crash. */
+  private win(): void {
+    const state = this.state;
+    state.won = true;
+    state.crashed = true;
+    state.crashReason = 'won';
+    this.scriptedSpin = null;
+    this.pendingVrunFlip = null;
+    this.clearRailRecovery();
+    this.clearRailPhase();
+    this.events.push({ type: 'win' });
   }
 
   get inputEdgeIsAirborne(): boolean {

@@ -10,11 +10,12 @@ export interface RunStats {
   bestTrick: number;
   perfects: number;
   nearMisses: number;
+  stunts: number;
   duration: number;
 }
 
 export function createRunStats(): RunStats {
-  return { score: 0, distance: 0, maxCombo: 0, totalFlips: 0, bestTrick: 0, perfects: 0, nearMisses: 0, duration: 0 };
+  return { score: 0, distance: 0, maxCombo: 0, totalFlips: 0, bestTrick: 0, perfects: 0, nearMisses: 0, stunts: 0, duration: 0 };
 }
 
 export function flipPoints(flips: number): number {
