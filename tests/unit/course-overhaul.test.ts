@@ -160,7 +160,8 @@ function checkFairness(seed: number): void {
     // The lip is vertical by construction, so the launch carries the full
     // surface speed upward plus the thruster boost — not the chord slope.
     const lipSurfaceSlope = Math.abs(course.surfaceAt(ramp.x1 - 0.5)!.slope);
-    const launchVy = speed * Math.sin(lipSurfaceSlope) + 500;
+    // Mirrors the sim's launch-velocity cap so the deck impact stays honest.
+    const launchVy = Math.min(speed * Math.sin(lipSurfaceSlope) + 500, 1400);
     const pit = segments[segments.indexOf(ramp) + 1];
     expect(pit?.kind, `${ramp.id} pit follows the ramp`).toBe('gap');
     const deck = segments[segments.indexOf(ramp) + 2];
@@ -1475,7 +1476,7 @@ describe('vertical run and vehicle stunt obstacles', () => {
     expect(traversed).toBe(tried);
   }, 120_000);
 
-  it('fires the air-burst 360 when a launched arc clears a vehicle lineup', () => {
+  it('fires the air-burst roll on a jump press over a vehicle lineup', () => {
     let flipped = 0;
     let tried = 0;
     for (let seed = 0; seed < 40 && tried < 12; seed += 1) {
@@ -1500,20 +1501,106 @@ describe('vertical run and vehicle stunt obstacles', () => {
       });
       let flips = 0;
       let airBursts = 0;
+      let pressed = false;
       const maxTicks = Math.ceil(20 / FIXED_DT);
       for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
-        simulation.step(false);
+        // Tap jump once mid-arc — the roll is input-driven now.
+        const pressing = !pressed && !simulation.state.grounded && simulation.state.airtime > 0.15;
+        simulation.step(pressing);
+        if (pressing) pressed = true;
         for (const event of simulation.events) {
           if (event.type === 'vehicleFlip') flips += 1;
           if (event.type === 'airBurst') airBursts += 1;
         }
         if (flips > 0 && simulation.state.grounded && simulation.state.x > lineup.x + lineup.width + 200) break;
       }
-      if (!simulation.state.crashed && flips === 1 && airBursts > 0) flipped += 1;
+      if (!simulation.state.crashed && pressed && flips === 1 && airBursts > 0) flipped += 1;
     }
     console.info(`launch-assisted vehicle flips: ${flipped}/${tried}`);
     expect(tried).toBeGreaterThanOrEqual(4);
     expect(flipped).toBe(tried);
+  }, 120_000);
+
+  it('never flips over a vehicle lineup without a jump press', () => {
+    let cleanPasses = 0;
+    let tried = 0;
+    for (let seed = 0; seed < 40 && tried < 10; seed += 1) {
+      const course = createCourse(seed);
+      const lineup = course.hazardsAhead(0, DISTANCE_150_SECONDS)
+        .find((hazard) => hazard.kind === 'vehicles' && hazard.requiresRamp);
+      if (!lineup) continue;
+      const rampSeg = course.segmentsInRange(lineup.x - 3000, lineup.x)
+        .reverse()
+        .find((segment) => segment.kind === 'launch');
+      if (!rampSeg) continue;
+      const surface = course.surfaceAt(rampSeg.x0 - 300);
+      if (!surface) continue;
+      tried += 1;
+      const simulation = new Simulation(seed);
+      const elapsed = timeAtDistance(rampSeg.x0 - 300);
+      const speed = speedAtTime(elapsed);
+      Object.assign(simulation.state, {
+        x: rampSeg.x0 - 300, y: surface.y - 30, elapsed, speed, vx: speed, vy: 0,
+        grounded: true,
+      });
+      let flips = 0;
+      let passedGrounded = false;
+      const maxTicks = Math.ceil(20 / FIXED_DT);
+      for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+        simulation.step(false);
+        for (const event of simulation.events) {
+          if (event.type === 'vehicleFlip' || event.type === 'stuntFlip') flips += 1;
+        }
+        if (simulation.state.grounded && simulation.state.x > lineup.x + lineup.width + 200) {
+          passedGrounded = true;
+          break;
+        }
+      }
+      if (!simulation.state.crashed && flips === 0 && passedGrounded) cleanPasses += 1;
+    }
+    console.info(`press-free lineup passes: ${cleanPasses}/${tried}`);
+    expect(tried).toBeGreaterThanOrEqual(4);
+    expect(cleanPasses).toBe(tried);
+  }, 120_000);
+
+  it('rolls the car when the jump press that clears parked cars fires the stunt', () => {
+    let rolled = 0;
+    let tried = 0;
+    for (let seed = 0; seed < 60 && tried < 10; seed += 1) {
+      const course = createCourse(seed);
+      const lineup = course.hazardsAhead(0, DISTANCE_150_SECONDS)
+        .find((hazard) => hazard.kind === 'vehicles' && !hazard.requiresRamp);
+      if (!lineup) continue;
+      const surface = course.surfaceAt(lineup.x - 400);
+      if (!surface || surface.segment.kind !== 'flat') continue;
+      tried += 1;
+      const simulation = new Simulation(seed);
+      const elapsed = timeAtDistance(lineup.x - 400);
+      const speed = speedAtTime(elapsed);
+      Object.assign(simulation.state, {
+        x: lineup.x - 400, y: surface.y - 30, elapsed, speed, vx: speed, vy: 0,
+        grounded: true,
+      });
+      let flips = 0;
+      let pressed = false;
+      const maxTicks = Math.ceil(8 / FIXED_DT);
+      for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+        // Jump on the designed takeoff point ~0.3s before the row.
+        const pressing = !pressed && simulation.state.x >= lineup.x - speed * 0.32;
+        simulation.step(pressing);
+        if (pressing) pressed = true;
+        for (const event of simulation.events) {
+          if (event.type === 'vehicleFlip') flips += 1;
+        }
+        if (pressed && simulation.state.grounded && simulation.state.x > lineup.x + lineup.width + 100) break;
+      }
+      // The finished roll must also score as a landed flip, not just fire the event.
+      if (!simulation.state.crashed && flips === 1 && simulation.state.roll === 0
+        && simulation.state.stats.totalFlips >= 1) rolled += 1;
+    }
+    console.info(`plain-hop barrel rolls: ${rolled}/${tried}`);
+    expect(tried).toBeGreaterThanOrEqual(4);
+    expect(rolled).toBe(tried);
   }, 120_000);
 
   it('awards the vertical-run bonus exactly once per traversal', () => {
@@ -1602,4 +1689,75 @@ describe('vertical run and vehicle stunt obstacles', () => {
     expect(cleared).toBeGreaterThanOrEqual(18);
     expect(met).toBeGreaterThanOrEqual(8);
   }, 180_000);
+
+  it('keeps climbing past the 90s ramp toward the 230mph top speed', () => {
+    expect(speedAtTime(90)).toBe(MAX_SPEED);
+    expect(speedAtTime(200)).toBeGreaterThan(speedAtTime(120));
+    expect(speedAtTime(120)).toBeGreaterThan(speedAtTime(90));
+    expect(speedAtTime(400)).toBeCloseTo(2812, 0);
+    expect(speedAtTime(10_000)).toBe(2812);
+    // 0.12 ft/unit → the cap reads as ~230mph on the HUD.
+    const mph = speedAtTime(10_000) * 0.12 * 3600 / 5280;
+    expect(mph).toBeGreaterThan(225);
+    expect(mph).toBeLessThan(235);
+    // distanceAtTime stays the exact integral of speedAtTime.
+    for (const t of [0, 30, 90, 200, 500, 900]) {
+      expect(timeAtDistance(distanceAtTime(t))).toBeCloseTo(t, 3);
+    }
+  });
+
+  it('ends the run as a win at one million points', () => {
+    const simulation = new Simulation(3);
+    simulation.state.stats.score = 999_990;
+    let won = false;
+    for (let tick = 0; tick < 240 && !simulation.state.crashed; tick += 1) {
+      simulation.step(false);
+      if (simulation.events.some((event) => event.type === 'win')) won = true;
+    }
+    expect(won).toBe(true);
+    expect(simulation.state.won).toBe(true);
+    expect(simulation.state.crashed).toBe(true);
+    expect(simulation.state.crashReason).toBe('won');
+  });
+
+  it('fires the corkscrew on a mid-flight jump press at the vertical-run lip', () => {
+    let corkscrewed = 0;
+    let tried = 0;
+    for (let seed = 0; seed < 30 && tried < 10; seed += 1) {
+      const course = createCourse(seed);
+      const run = course.verticalRunsInRange(0, DISTANCE_150_SECONDS)[0];
+      if (!run) continue;
+      const surface = course.surfaceAt(run.rampX0 - 400);
+      if (!surface) continue;
+      tried += 1;
+      const simulation = new Simulation(seed);
+      const elapsed = timeAtDistance(run.rampX0 - 400);
+      const speed = speedAtTime(elapsed);
+      Object.assign(simulation.state, {
+        x: run.rampX0 - 400, y: surface.y - 30, elapsed, speed, vx: speed, vy: 0,
+        grounded: true,
+      });
+      let launched = false;
+      let stunts = 0;
+      let landed = 0;
+      let pressed = false;
+      const maxTicks = Math.ceil(30 / FIXED_DT);
+      for (let tick = 0; tick < maxTicks && !simulation.state.crashed; tick += 1) {
+        // Press right after the lip launch — the corkscrew is press-driven.
+        const pressing = !pressed && launched && !simulation.state.grounded;
+        simulation.step(pressing);
+        if (pressing) pressed = true;
+        for (const event of simulation.events) {
+          if (event.type === 'verticalLaunch') launched = true;
+          if (event.type === 'stuntFlip') stunts += 1;
+          if (event.type === 'verticalRunLanded') landed += 1;
+        }
+        if (landed > 0 && simulation.state.x > run.landingX0 + 400) break;
+      }
+      if (!simulation.state.crashed && stunts === 1 && landed === 1) corkscrewed += 1;
+    }
+    console.info(`press-driven corkscrews: ${corkscrewed}/${tried}`);
+    expect(tried).toBeGreaterThanOrEqual(6);
+    expect(corkscrewed).toBe(tried);
+  }, 120_000);
 });

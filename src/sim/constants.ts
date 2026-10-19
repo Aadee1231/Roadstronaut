@@ -9,6 +9,12 @@ export const WHEEL_RADIUS = 9;
 export const START_SPEED = 430;
 export const MAX_SPEED = 980;
 export const SPEED_RAMP_SECONDS = 90;
+/** True top speed (~230 MPH at 0.12 ft/unit): reached after the 90s ramp plus a long cruise climb. */
+export const TOP_SPEED = 2812;
+/** Speed gained per second once the initial ramp finishes; hits TOP_SPEED around t ≈ 6.5 min. */
+export const SPEED_CRUISE_RATE = 6;
+/** Score that wins the game. */
+export const WIN_SCORE = 1_000_000;
 export const GRAVITY = 1200;
 export const JUMP_VELOCITY = -520;
 export const SUPER_JUMP_VELOCITY = -740;
@@ -50,16 +56,26 @@ export const AIRBORNE_FALL_LIMIT = 900;
 export const HAZARD_RECOVERY_SECONDS = 0.35;
 /** Compressed-air thruster impulse added to the car's surface-normal momentum at the top of a vertical run. */
 export const VERTICAL_LAUNCH_BOOST = -500;
+/** Magnitude cap on the vertical-run exit velocity: above ~1400 u/s the deck
+ * impact would exceed CRASH_IMPACT, so the thruster absorbs the excess surface
+ * momentum instead of throwing it all upward. Keeps the run survivable at any
+ * cruise speed. */
+export const VERTICAL_LAUNCH_VY_CAP = 1400;
 /** Base score for landing a vertical run safely past the pit. */
 export const VERTICAL_RUN_BONUS = 1500;
 /** Earliest run time (seconds) at which a vertical run may appear. */
 export const VRAMP_FIRST_AT_SECONDS = 45;
 
-// Quadratic ease-out front-loads the 430→980 speed ramp over 90 seconds.
+const CRUISE_CAP_SECONDS = (TOP_SPEED - MAX_SPEED) / SPEED_CRUISE_RATE;
+
+// Quadratic ease-out front-loads the 430→980 speed ramp over 90 seconds, then a
+// steady linear climb keeps pushing the car toward the 230 MPH top speed.
 export function speedAtTime(time: number): number {
   const progress = min(1, max(0, time / SPEED_RAMP_SECONDS));
   const easeOut = 1 - (1 - progress) * (1 - progress);
-  return START_SPEED + (MAX_SPEED - START_SPEED) * easeOut;
+  const ramped = START_SPEED + (MAX_SPEED - START_SPEED) * easeOut;
+  const over = max(0, time - SPEED_RAMP_SECONDS);
+  return min(TOP_SPEED, ramped + SPEED_CRUISE_RATE * over);
 }
 
 export function distanceAtTime(time: number): number {
@@ -69,7 +85,11 @@ export function distanceAtTime(time: number): number {
   const rampDistance = START_SPEED * rampTime + (MAX_SPEED - START_SPEED) * (
     rampTime - SPEED_RAMP_SECONDS / 3 * (1 - (1 - rampProgress) * (1 - rampProgress) * (1 - rampProgress))
   );
-  return rampDistance + max(0, time - SPEED_RAMP_SECONDS) * MAX_SPEED;
+  const over = max(0, time - SPEED_RAMP_SECONDS);
+  const cruiseTime = min(over, CRUISE_CAP_SECONDS);
+  const cruiseDistance = MAX_SPEED * cruiseTime + SPEED_CRUISE_RATE * cruiseTime * cruiseTime / 2
+    + TOP_SPEED * (over - cruiseTime);
+  return rampDistance + cruiseDistance;
 }
 
 export function timeAtDistance(distance: number): number {

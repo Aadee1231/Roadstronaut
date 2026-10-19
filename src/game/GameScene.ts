@@ -414,18 +414,29 @@ export class GameScene extends Phaser.Scene {
           cam.flash(120, 255, 210, 120, true);
           break;
         case 'vehicleFlip':
+        case 'stuntFlip':
           this.flameTimer = Math.max(this.flameTimer, 0.45);
           this.exhaust.explode(16, state.x, state.y);
           this.dust.explode(10, state.x, state.y);
           cam.shake(90, 0.003);
           break;
         case 'airBurst': {
-          // Compressed-air puffs shoving the car around the somersault.
+          // Compressed-air jets firing from the car's SIDES — the alternating
+          // perpendicular puffs are what shove it around the barrel roll.
           const side = Math.floor(state.elapsed * 11) % 2 ? 1 : -1;
           const c = Math.cos(state.angle);
           const s = Math.sin(state.angle);
-          this.exhaust.explode(5, state.x - c * side * 40, state.y - s * side * 40 - CAR_HEIGHT / 2);
-          this.dust.explode(4, state.x + s * 20, state.y + c * 20);
+          this.exhaust.explode(7, state.x - s * side * 42, state.y + c * side * 42);
+          this.exhaust.explode(3, state.x + s * side * 42, state.y - c * side * 42);
+          this.dust.explode(4, state.x + c * side * 24, state.y + s * side * 24);
+          break;
+        }
+        case 'win': {
+          this.sparks.explode(60, state.x, state.y);
+          this.exhaust.explode(40, state.x, state.y);
+          this.dust.explode(24, state.x, state.y);
+          cam.shake(200, 0.006);
+          cam.flash(300, 255, 220, 120, true);
           break;
         }
         case 'hardLanding':
@@ -950,6 +961,11 @@ export class GameScene extends Phaser.Scene {
   private drawCar(x: number, y: number, angle: number, dt: number, displayedAngle = angle): void {
     const state = this.simulation.state;
     this.car.setPosition(x, y).setRotation(displayedAngle);
+    // Barrel-roll illusion: squash the car edge-on as it rolls around its
+    // long axis, so a scripted spin reads as a sideways 3D turn instead of a
+    // flat somersault. roll ≈ π/2 shows the thin side profile.
+    const rollSquash = Math.max(0.14, Math.abs(Math.cos(state.roll)));
+    this.car.setScale(1, rollSquash);
     if (!state.crashed) this.wheelSpin += (state.speed * dt) / WHEEL_WORLD_R;
     for (const w of this.wheels) w.setRotation(this.wheelSpin);
     this.flameTimer = Math.max(0, this.flameTimer - dt);
@@ -1032,6 +1048,7 @@ export class GameScene extends Phaser.Scene {
     state.inverted = false;
     state.angle = surface.slope;
     state.angularVelocity = 0;
+    state.roll = 0;
     state.elapsed = Math.max(state.elapsed, timeAtDistance(x));
     state.speed = state.vx;
     this.previousX = state.x;
