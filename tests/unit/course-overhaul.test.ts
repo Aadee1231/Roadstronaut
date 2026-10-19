@@ -1694,7 +1694,9 @@ describe('vertical run and vehicle stunt obstacles', () => {
     expect(speedAtTime(90)).toBe(MAX_SPEED);
     expect(speedAtTime(200)).toBeGreaterThan(speedAtTime(120));
     expect(speedAtTime(120)).toBeGreaterThan(speedAtTime(90));
-    expect(speedAtTime(400)).toBeCloseTo(2812, 0);
+    // The cruise reaches the cap inside the 12–15 minute window.
+    expect(speedAtTime(850)).toBeCloseTo(2812, 0);
+    expect(speedAtTime(700)).toBeLessThan(2812);
     expect(speedAtTime(10_000)).toBe(2812);
     // 0.12 ft/unit → the cap reads as ~230mph on the HUD.
     const mph = speedAtTime(10_000) * 0.12 * 3600 / 5280;

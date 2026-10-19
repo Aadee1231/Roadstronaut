@@ -11,8 +11,8 @@ export const MAX_SPEED = 980;
 export const SPEED_RAMP_SECONDS = 90;
 /** True top speed (~230 MPH at 0.12 ft/unit): reached after the 90s ramp plus a long cruise climb. */
 export const TOP_SPEED = 2812;
-/** Speed gained per second once the initial ramp finishes; hits TOP_SPEED around t ≈ 6.5 min. */
-export const SPEED_CRUISE_RATE = 6;
+/** Speed gained per second once the initial ramp finishes; hits TOP_SPEED around t ≈ 13.7 min. */
+export const SPEED_CRUISE_RATE = 2.5;
 /** Score that wins the game. */
 export const WIN_SCORE = 1_000_000;
 export const GRAVITY = 1200;
