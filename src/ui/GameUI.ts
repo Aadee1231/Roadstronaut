@@ -76,6 +76,8 @@ export class GameUI {
   private fanRailMessageShown = false;
   private milestoneCount = 0;
   private scoreAnimationFrame = 0;
+  private lastHudAt = 0;
+  private readonly elementCache = new Map<string, HTMLElement | null>();
   private readonly actions: Record<string, (button: HTMLButtonElement) => void>;
   private readonly onGameFinished = (result: RunFinished): void => { void this.finishRun(result); };
   private readonly onPauseRequest = (): void => { if (!this.root.querySelector('#pause-screen')?.classList.contains('is-hidden')) return; this.pause(); };
@@ -356,24 +358,27 @@ export class GameUI {
   }
 
   private updateHud(state: SimulationState): void {
-    if (this.root.querySelector('#hud')?.classList.contains('is-hidden')) return;
+    const now = performance.now();
+    if (now - this.lastHudAt < 90) return;
+    this.lastHudAt = now;
+    if (this.el('#hud')?.classList.contains('is-hidden')) return;
     this.text('#score-value', state.stats.score.toLocaleString('en-US').padStart(6, '0'));
     this.text('#combo-value', state.combo ? `COMBO ×${Math.min(8, 1 + state.combo * 0.5).toFixed(state.combo % 2 ? 1 : 0)}` : '');
     this.text('#energy-value', String(Math.round(state.energy)));
     this.text('#speed-value', String(Math.round(unitsPerSecondToMph(state.speed))));
     this.text('#distance-value', formatDistance(state.stats.distance * 10));
-    const fill = this.root.querySelector<HTMLElement>('#energy-fill');
+    const fill = this.el('#energy-fill');
     if (fill) {
-      fill.style.width = `${state.energy}%`;
+      fill.style.transform = `scaleX(${Math.max(0, state.energy) / 100})`;
       fill.classList.toggle('is-empty', state.energy < 15);
     }
-    const fanFill = this.root.querySelector<HTMLElement>('#fan-fill');
+    const fanFill = this.el('#fan-fill');
     if (fanFill) {
-      fanFill.style.width = `${state.fan}%`;
+      fanFill.style.transform = `scaleX(${Math.max(0, state.fan) / 100})`;
       fanFill.classList.toggle('is-empty', state.fan < 15);
     }
     this.text('#fan-value', String(Math.round(state.fan)));
-    this.root.querySelector('#fan-panel')?.classList.toggle('is-hidden', !state.fanRailVisible && !state.inverted);
+    this.el('#fan-panel')?.classList.toggle('is-hidden', !state.fanRailVisible && !state.inverted);
     if (state.fanRailVisible && !this.fanRailMessageShown) {
       this.fanRailMessageShown = true;
       this.addFeedback('FAN RAIL AHEAD — HALF-FLIP TO ENGAGE');
@@ -382,6 +387,7 @@ export class GameUI {
   }
 
   showEvents(events: readonly { type: string; quality?: string; flips?: number }[]): void {
+    if (!events.length) return;
     const hard = events.some((event) => event.type === 'hardLanding');
     const landingLabels = new Map(landingFeedbackLabels(events, hard).map((feedback) => [feedback.eventIndex, feedback]));
     events.forEach((event, eventIndex) => {
@@ -418,7 +424,7 @@ export class GameUI {
     const item = document.createElement('div');
     item.className = `feedback-item ${perfect ? 'feedback-perfect' : ''}`;
     item.textContent = label;
-    this.root.querySelector('#feedback-stack')?.append(item);
+    this.el('#feedback-stack')?.append(item);
     window.setTimeout(() => item.remove(), 1550);
   }
 
@@ -433,7 +439,7 @@ export class GameUI {
   }
 
   private setTutorial(which: 'tap' | 'hold' | ''): void {
-    const hint = this.root.querySelector<HTMLElement>('#tutorial-hint');
+    const hint = this.el('#tutorial-hint');
     if (!hint) return;
     hint.textContent = which === 'tap' ? 'TAP / SPACE TO JUMP' : which === 'hold' ? 'IN THE AIR: PRESS & HOLD TO FLIP · RELEASE TO LEVEL' : '';
     hint.classList.toggle('is-hidden', !which);
@@ -567,8 +573,13 @@ export class GameUI {
     this.text('.menu-best', this.personalBest.toLocaleString('en-US').padStart(6, '0'));
   }
 
+  private el<T extends HTMLElement>(selector: string): T | null {
+    if (!this.elementCache.has(selector)) this.elementCache.set(selector, this.root.querySelector<T>(selector));
+    return this.elementCache.get(selector) as T | null;
+  }
+
   private text(selector: string, value: string): void {
-    const element = this.root.querySelector<HTMLElement>(selector);
+    const element = this.el(selector);
     if (element) element.textContent = value;
   }
 

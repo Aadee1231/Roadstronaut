@@ -63,6 +63,13 @@ interface ParallaxLayer {
   lift: number;
 }
 
+/** Minimum seconds between scene redraws: 90-120Hz phone displays fire RAF far more often than the 60fps the scene needs. */
+const DRAW_INTERVAL = 1 / 63;
+/** RAF cadence below this implies a >80Hz display, where redraws are decimated to ~60fps. */
+const HIGH_REFRESH_FRAME_MS = 1000 / 80;
+/** Seconds after a run stops moving (pause/game-over) before the static scene stops being retessellated. */
+const IDLE_FREEZE_SECONDS = 2.5;
+
 export class GameScene extends Phaser.Scene {
   private simulation = new Simulation(1);
   private accumulator = 0;
@@ -109,6 +116,9 @@ export class GameScene extends Phaser.Scene {
   private flameTimer = 0;
   private crashTimer = 0;
   private trail: { x: number; y: number; a: number }[] = [];
+  private drawElapsed = Number.POSITIVE_INFINITY;
+  private idleElapsed = 0;
+  private sceneDirty = true;
 
   constructor() {
     super('game');
@@ -195,11 +205,19 @@ export class GameScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const dt = Math.min(80, delta) / 1000;
+    this.drawElapsed += dt;
     if (!this.activeRun && !this.attractMode) {
       this.crashTimer += dt;
-      this.drawScene(dt);
+      this.idleElapsed += dt;
+      const shouldDraw = (this.idleElapsed < IDLE_FREEZE_SECONDS && (this.drawElapsed >= DRAW_INTERVAL || delta >= HIGH_REFRESH_FRAME_MS)) || this.sceneDirty;
+      if (shouldDraw) {
+        this.drawScene(Math.min(this.drawElapsed, 0.1));
+        this.drawElapsed = 0;
+        this.sceneDirty = false;
+      }
       return;
     }
+    this.idleElapsed = 0;
     this.accumulator += dt;
     this.frameEvents.length = 0;
     while (this.accumulator >= FIXED_DT) {
@@ -240,7 +258,11 @@ export class GameScene extends Phaser.Scene {
     }
     this.handleEvents(this.frameEvents);
     if (this.activeRun || this.finishedRun) this.game.events.emit('run-state', this.simulation.state, this.frameEvents);
-    this.drawScene(dt);
+    if (this.drawElapsed >= DRAW_INTERVAL || delta >= HIGH_REFRESH_FRAME_MS) {
+      this.drawScene(Math.min(this.drawElapsed, 0.1));
+      this.drawElapsed = 0;
+      this.sceneDirty = false;
+    }
   }
 
   private startRun(options?: { seed?: number }): void {
@@ -281,6 +303,7 @@ export class GameScene extends Phaser.Scene {
     this.car.setVisible(true).setAlpha(1);
     this.carBody.clearTint();
     this.carBody.setTexture(readPaint() === 'coral' ? 'car-body-coral' : 'car-body');
+    this.sceneDirty = true;
   }
 
   private beginCarAngleBlend(targetAngle: number): void {
@@ -340,6 +363,7 @@ export class GameScene extends Phaser.Scene {
       const scale = Math.max(0.45, (height * l.heightFrac) / texHeight);
       l.sprite.setScale(scale).setSize(width / scale + 2, texHeight);
     }
+    this.sceneDirty = true;
   }
 
   private handleEvents(events: readonly SimEvent[]): void {
@@ -571,14 +595,17 @@ export class GameScene extends Phaser.Scene {
         g.lineBetween(seg.x0, seg.y0 + depth, seg.x1, seg.y1 + depth);
       }
     }
-    // vertical grid posts
+    // vertical grid posts — one stroked path keeps Graphics tessellation cheap
     const spacing = 160;
+    g.lineStyle(2, edge, 0.13);
+    g.beginPath();
     for (let gx = Math.floor((left - 200) / spacing) * spacing; gx < right; gx += spacing) {
       const s = course.surfaceAt(gx);
       if (!s) continue;
-      g.lineStyle(2, edge, 0.13);
-      g.lineBetween(gx, s.y + 4, gx, s.y + 300);
+      g.moveTo(gx, s.y + 4);
+      g.lineTo(gx, s.y + 300);
     }
+    g.strokePath();
     for (const seg of segments) {
       if (seg.kind === 'gap') {
         this.drawGapRims(seg, elapsed);
