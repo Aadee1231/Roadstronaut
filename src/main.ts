@@ -20,7 +20,7 @@ const game = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game-canvas',
   backgroundColor: '#0b0a23',
-  render: { antialias: true, pixelArt: false, roundPixels: false },
+  render: { antialias: true, pixelArt: false, roundPixels: false, powerPreference: 'high-performance' },
   scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH },
   input: { activePointers: 3, touch: { capture: true } },
   scene: [BootScene, GameScene],
