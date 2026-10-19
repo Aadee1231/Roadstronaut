@@ -69,6 +69,10 @@ const DRAW_INTERVAL = 1 / 63;
 const HIGH_REFRESH_FRAME_MS = 1000 / 80;
 /** Seconds after a run stops moving (pause/game-over) before the static scene stops being retessellated. */
 const IDLE_FREEZE_SECONDS = 2.5;
+/** Under-surface contour lines: [depth below surface, alpha]. */
+const GROUND_STRATA: readonly (readonly [number, number])[] = [
+  [16, 0.22], [42, 0.14], [90, 0.09], [170, 0.06], [290, 0.04],
+];
 
 export class GameScene extends Phaser.Scene {
   private simulation = new Simulation(1);
@@ -119,6 +123,12 @@ export class GameScene extends Phaser.Scene {
   private drawElapsed = Number.POSITIVE_INFINITY;
   private idleElapsed = 0;
   private sceneDirty = true;
+  /** vramp curve point lists are pure functions of the (immutable) segment — cache per segment. */
+  private readonly vrampCache = new WeakMap<CourseSegment, { x: number; y: number }[]>();
+  private layerEntries: [keyof GameScene['layers'], ParallaxLayer][] = [];
+  /** Exhaust nozzle offset in car-local space (recomputed once, was allocated per frame). */
+  private nozzleX = 0;
+  private nozzleY = 0;
 
   constructor() {
     super('game');
@@ -142,6 +152,8 @@ export class GameScene extends Phaser.Scene {
       lights: layer('bg-skyline-lights', -83, 0.22, 0.4, 0.0, true),
     };
     this.haze = this.add.image(0, 0, 'bg-haze').setOrigin(0, 1).setScrollFactor(0).setDepth(-80).setBlendMode(Phaser.BlendModes.ADD);
+    this.layerEntries = Object.entries(this.layers) as [keyof GameScene['layers'], ParallaxLayer][];
+    [this.nozzleX, this.nozzleY] = artToCar(4, 61);
 
     this.track = this.add.graphics().setDepth(0);
     this.fx = this.add.graphics().setDepth(4).setBlendMode(Phaser.BlendModes.ADD);
@@ -161,17 +173,17 @@ export class GameScene extends Phaser.Scene {
     this.exhaust = this.add.particles(0, 0, 'spark', {
       lifespan: { min: 180, max: 380 }, speedX: { min: -160, max: -60 }, speedY: { min: -30, max: 30 },
       scale: { start: 0.55, end: 0 }, alpha: { start: 0.9, end: 0 }, tint: [0x2ef2ff, 0x7b2cff, 0x9ffbff],
-      blendMode: 'ADD', emitting: false,
+      blendMode: 'ADD', emitting: false, maxParticles: 200,
     }).setDepth(4);
     this.dust = this.add.particles(0, 0, 'smoke', {
       lifespan: { min: 380, max: 750 }, speedX: { min: -220, max: -40 }, speedY: { min: -90, max: -10 },
       scale: { start: 0.35, end: 1.1 }, alpha: { start: 0.45, end: 0 }, tint: [0xb9a6ff, 0xffb3a0],
-      emitting: false,
+      emitting: false, maxParticles: 140,
     }).setDepth(6);
     this.sparks = this.add.particles(0, 0, 'spark', {
       lifespan: { min: 250, max: 650 }, speed: { min: 120, max: 460 }, angle: { min: 180, max: 360 },
       gravityY: 900, scale: { start: 0.5, end: 0 }, alpha: { start: 1, end: 0 }, tint: [0xffb347, 0xff6b4a, 0xfff3b0],
-      blendMode: 'ADD', emitting: false,
+      blendMode: 'ADD', emitting: false, maxParticles: 220,
     }).setDepth(7);
     this.world = this.add.container(0, 0, [this.track, this.exhaust, this.fx, this.car, this.dust, this.sparks]).setDepth(0);
     this.foreground = this.add.graphics().setScrollFactor(0).setDepth(20);
@@ -300,6 +312,9 @@ export class GameScene extends Phaser.Scene {
     this.camY = Number.NaN;
     this.trail.length = 0;
     this.crashTimer = 0;
+    // The course is regenerated per run — baked lineup textures belong to the old one
+    for (const { rt } of this.lineupCache.values()) rt.destroy();
+    this.lineupCache.clear();
     this.car.setVisible(true).setAlpha(1);
     this.carBody.clearTint();
     this.carBody.setTexture(readPaint() === 'coral' ? 'car-body-coral' : 'car-body');
@@ -553,7 +568,7 @@ export class GameScene extends Phaser.Scene {
       skyline: [b.skyline, b.skylineAlpha],
       lights: [b.lights, b.skylineAlpha * 0.85],
     };
-    for (const [name, l] of Object.entries(this.layers) as [keyof typeof this.layers, ParallaxLayer][]) {
+    for (const [name, l] of this.layerEntries) {
       const [color, alpha] = tint[name];
       l.sprite.setTint(color).setAlpha(alpha).setVisible(alpha > 0.01)
         .setPosition(0, horizon + 2 - H * l.lift + liftPx * l.factor * 0.6)
@@ -581,19 +596,56 @@ export class GameScene extends Phaser.Scene {
       this.fx.lineStyle(3, edge, 0.95);
       this.fx.lineBetween(left - 200, BASE_Y, 0, BASE_Y);
     }
+    // Ground fill: one polygon per contiguous run of drivable segments —
+    // the same silhouette as the old per-segment quads, in far fewer ops.
+    // (Each run needs a fresh point list: fillPoints stores the array by
+    // reference in the Graphics command buffer.)
+    g.fillStyle(biome.ground, 1);
+    let run: CourseSegment[] = [];
+    const edgeRuns = new Map<number, CourseSegment[]>();
+    const flat: CourseSegment[] = [];
+    const flushGround = (): void => {
+      if (run.length) {
+        const first = run[0]!;
+        const last = run[run.length - 1]!;
+        const pts: { x: number; y: number }[] = [{ x: first.x0, y: first.y0 }];
+        for (const seg of run) pts.push({ x: seg.x1, y: seg.y1 });
+        pts.push({ x: last.x1, y: bottom }, { x: first.x0, y: bottom });
+        g.fillPoints(pts, true);
+        run = [];
+      }
+    };
     for (const seg of segments) {
-      if (seg.kind === 'gap') continue;
+      if (seg.kind === 'gap') {
+        flushGround();
+        continue;
+      }
       if (seg.kind === 'vramp') {
+        flushGround();
         this.drawVRampFill(seg, bottom, biome.ground, edge);
         continue;
       }
-      g.fillStyle(biome.ground, 1);
-      g.fillPoints([{ x: seg.x0, y: seg.y0 }, { x: seg.x1, y: seg.y1 }, { x: seg.x1, y: bottom }, { x: seg.x0, y: bottom }], true);
-      // depth strata
-      for (const [depth, alpha] of [[16, 0.22], [42, 0.14], [90, 0.09], [170, 0.06], [290, 0.04]] as const) {
-        g.lineStyle(2, edge, alpha);
-        g.lineBetween(seg.x0, seg.y0 + depth, seg.x1, seg.y1 + depth);
+      // Guard against non-adjacent flat segments — a merged polygon must not
+      // span a hole the old per-segment quads left empty.
+      if (run.length && Math.abs(seg.x0 - run[run.length - 1]!.x1) > 0.5) flushGround();
+      run.push(seg);
+      flat.push(seg);
+      const isLaunch = seg.kind === 'launch';
+      const isKicker = seg.kind === 'kicker' || seg.kind === 'quarter';
+      const color = isLaunch ? 0xff6b4a : isKicker ? accent : edge;
+      const bucket = edgeRuns.get(color);
+      if (bucket) bucket.push(seg); else edgeRuns.set(color, [seg]);
+    }
+    flushGround();
+    // depth strata — one stroked path per depth across every segment
+    for (const [depth, alpha] of GROUND_STRATA) {
+      g.lineStyle(2, edge, alpha);
+      g.beginPath();
+      for (const seg of flat) {
+        g.moveTo(seg.x0, seg.y0 + depth);
+        g.lineTo(seg.x1, seg.y1 + depth);
       }
+      g.strokePath();
     }
     // vertical grid posts — one stroked path keeps Graphics tessellation cheap
     const spacing = 160;
@@ -606,6 +658,18 @@ export class GameScene extends Phaser.Scene {
       g.lineTo(gx, s.y + 300);
     }
     g.strokePath();
+    // surface edges — two stroked paths (glow + core) per color group
+    for (const [color, segs] of edgeRuns) {
+      for (const [width, alpha] of [[9, 0.18], [3, 0.95]] as const) {
+        fx.lineStyle(width, color, alpha);
+        fx.beginPath();
+        for (const seg of segs) {
+          fx.moveTo(seg.x0, seg.y0);
+          fx.lineTo(seg.x1, seg.y1);
+        }
+        fx.strokePath();
+      }
+    }
     for (const seg of segments) {
       if (seg.kind === 'gap') {
         this.drawGapRims(seg, elapsed);
@@ -615,18 +679,19 @@ export class GameScene extends Phaser.Scene {
         this.drawVRampEdge(seg, elapsed);
         continue;
       }
-      const isLaunch = seg.kind === 'launch';
-      const isKicker = seg.kind === 'kicker' || seg.kind === 'quarter';
-      const color = isLaunch ? 0xff6b4a : isKicker ? accent : edge;
-      fx.lineStyle(9, color, 0.18);
-      fx.lineBetween(seg.x0, seg.y0, seg.x1, seg.y1);
-      fx.lineStyle(3, color, 0.95);
-      fx.lineBetween(seg.x0, seg.y0, seg.x1, seg.y1);
-      if (isLaunch || isKicker) this.drawRampDetail(seg, isLaunch, elapsed);
+      if (seg.kind === 'launch') this.drawRampDetail(seg, true, elapsed);
+      else if (seg.kind === 'kicker' || seg.kind === 'quarter') this.drawRampDetail(seg, false, elapsed);
     }
     for (const ceiling of course.ceilingsInRange(left - 200, right)) this.drawFanRail(ceiling, top, elapsed);
     for (const hazard of course.hazardsAhead(left - 200, right - left + 200)) {
       if (hazard.kind !== 'gap') this.drawObstacle(hazard, elapsed);
+    }
+    // Free baked lineup textures once their hazard is well behind the camera
+    for (const [id, entry] of this.lineupCache) {
+      if (entry.right < left - 600) {
+        entry.rt.destroy();
+        this.lineupCache.delete(id);
+      }
     }
   }
 
@@ -637,28 +702,44 @@ export class GameScene extends Phaser.Scene {
     const engaged = state.inverted && state.x >= c.x0 && state.x <= c.x1;
     const slabTop = c.y - 34;
     const skyTop = Math.min(top - 50, slabTop - 40);
+    g.fillStyle(0x0c0a24, 1);
     for (let px = c.x0 + 40; px < c.x1; px += 260) {
-      g.fillStyle(0x0c0a24, 1);
       g.fillRect(px - 5, skyTop, 10, slabTop - skyTop);
-      g.lineStyle(1.5, 0x7b2cff, 0.4);
-      for (let y = slabTop; y > skyTop; y -= 28) g.lineBetween(px - 5, y, px + 5, y - 28);
     }
+    // diagonal bracing on every post — one stroked path for the whole rail
+    g.lineStyle(1.5, 0x7b2cff, 0.4);
+    g.beginPath();
+    for (let px = c.x0 + 40; px < c.x1; px += 260) {
+      for (let y = slabTop; y > skyTop; y -= 28) {
+        g.moveTo(px - 5, y);
+        g.lineTo(px + 5, y - 28);
+      }
+    }
+    g.strokePath();
     g.fillStyle(0x120c30, 1);
     g.fillRect(c.x0, slabTop, c.x1 - c.x0, 34);
     g.fillStyle(0x1d1446, 1);
     g.fillRect(c.x0, slabTop, c.x1 - c.x0, 6);
     const spin = elapsed * (engaged ? 22 : 7);
+    const cy = slabTop + 18;
+    g.fillStyle(0x05040f, 1);
     for (let vx = c.x0 + 30; vx < c.x1 - 20; vx += 70) {
-      const cy = slabTop + 18;
-      g.fillStyle(0x05040f, 1);
       g.fillCircle(vx, cy, 11);
-      fx.lineStyle(1.5, 0x2ef2ff, engaged ? 0.9 : 0.45);
+    }
+    fx.lineStyle(1.5, 0x2ef2ff, engaged ? 0.9 : 0.45);
+    for (let vx = c.x0 + 30; vx < c.x1 - 20; vx += 70) {
       fx.strokeCircle(vx, cy, 11);
+    }
+    // fan blades — one stroked path
+    fx.beginPath();
+    for (let vx = c.x0 + 30; vx < c.x1 - 20; vx += 70) {
       for (let b = 0; b < 3; b += 1) {
         const a = spin + (b * Math.PI * 2) / 3;
-        fx.lineBetween(vx, cy, vx + Math.cos(a) * 9, cy + Math.sin(a) * 9);
+        fx.moveTo(vx, cy);
+        fx.lineTo(vx + Math.cos(a) * 9, cy + Math.sin(a) * 9);
       }
     }
+    fx.strokePath();
     const glow = engaged ? 0.95 : 0.6 + 0.25 * Math.sin(elapsed * 6);
     fx.lineStyle(12, 0x2ef2ff, engaged ? 0.3 : 0.12);
     fx.lineBetween(c.x0, c.y, c.x1, c.y);
@@ -680,6 +761,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private vrampCurve(seg: CourseSegment, steps = 40): { x: number; y: number }[] {
+    const cached = this.vrampCache.get(seg);
+    if (cached) return cached;
     const course = this.simulation.course;
     const pts: { x: number; y: number }[] = [];
     for (let i = 0; i <= steps; i += 1) {
@@ -693,6 +776,7 @@ export class GameScene extends Phaser.Scene {
       const phi = (k / 8) * 0.55;
       pts.push({ x: seg.x1 - curlR * (1 - Math.cos(phi)), y: seg.y1 - curlR * Math.sin(phi) });
     }
+    this.vrampCache.set(seg, pts);
     return pts;
   }
 
@@ -702,12 +786,13 @@ export class GameScene extends Phaser.Scene {
     g.fillStyle(ground, 1);
     const poly = [...pts, { x: seg.x1, y: bottom }, { x: seg.x0, y: bottom }];
     g.fillPoints(poly, true);
-    // depth strata following the curve
+    // depth strata following the curve — one stroked path per depth
     for (const [depth, alpha] of [[16, 0.22], [42, 0.14], [90, 0.09], [170, 0.06]] as const) {
       g.lineStyle(2, edge, alpha);
-      for (let i = 0; i < pts.length - 1; i += 1) {
-        g.lineBetween(pts[i]!.x, pts[i]!.y + depth, pts[i + 1]!.x, pts[i + 1]!.y + depth);
-      }
+      g.beginPath();
+      g.moveTo(pts[0]!.x, pts[0]!.y + depth);
+      for (let i = 1; i < pts.length; i += 1) g.lineTo(pts[i]!.x, pts[i]!.y + depth);
+      g.strokePath();
     }
   }
 
@@ -718,12 +803,13 @@ export class GameScene extends Phaser.Scene {
     const pts = this.vrampCurve(seg);
     const color = 0x2ef2ff;
     const climbing = state.grounded && state.x >= seg.x0 && state.x <= seg.x1;
-    // glow + core edge along the curve
+    // glow + core edge along the curve — each a single stroked polyline
     for (const [width, alpha] of [[10, climbing ? 0.3 : 0.18], [3, 0.95]] as const) {
       fx.lineStyle(width, color, alpha);
-      for (let i = 0; i < pts.length - 1; i += 1) {
-        fx.lineBetween(pts[i]!.x, pts[i]!.y, pts[i + 1]!.x, pts[i + 1]!.y);
-      }
+      fx.beginPath();
+      fx.moveTo(pts[0]!.x, pts[0]!.y);
+      for (let i = 1; i < pts.length; i += 1) fx.lineTo(pts[i]!.x, pts[i]!.y);
+      fx.strokePath();
     }
     // suction rail markers: animated chevrons riding up the curve
     const phase = (elapsed * (climbing ? 3.2 : 1.6)) % 1;
@@ -752,18 +838,40 @@ export class GameScene extends Phaser.Scene {
     fx.fillCircle(lip.x, lip.y - 4, 6);
     fx.fillStyle(0xff6b4a, 0.3 * pulse);
     fx.fillCircle(lip.x, lip.y - 4, 20);
-    // support struts under the low half of the curve
+    // support struts under the low half of the curve — one stroked path
     g.lineStyle(2, 0x2ef2ff, 0.25);
+    g.beginPath();
     for (let i = 2; i < pts.length * 0.5; i += 4) {
-      g.lineBetween(pts[i]!.x, pts[i]!.y + 4, pts[i]!.x + 30, pts[i]!.y + 70);
-      g.lineBetween(pts[i]!.x + 30, pts[i]!.y + 70, pts[i]!.x + 60, pts[i]!.y + 6);
+      g.moveTo(pts[i]!.x, pts[i]!.y + 4);
+      g.lineTo(pts[i]!.x + 30, pts[i]!.y + 70);
+      g.lineTo(pts[i]!.x + 60, pts[i]!.y + 6);
     }
+    g.strokePath();
   }
 
-  private drawVehicleLineup(h: Hazard, elapsed: number): void {
-    const g = this.track;
-    const fx = this.fx;
-    const blink = 0.5 + 0.5 * Math.sin(elapsed * 7 + h.x);
+  /** The parked-vehicle art is identical every frame — bake it once into a
+   * RenderTexture so each lineup costs one sprite blit instead of ~15
+   * Graphics ops per vehicle, every frame. */
+  private readonly lineupCache = new Map<string, { rt: Phaser.GameObjects.RenderTexture; right: number }>();
+
+  private bakeVehicleLineup(h: Hazard): Phaser.GameObjects.RenderTexture {
+    const padX = 26;
+    const topPad = 40; // room for the tall warning beacons' glow
+    const bottomPad = 16;
+    const rt = this.add
+      .renderTexture(h.x - padX, h.baseY - h.height - topPad, h.width + padX * 2, h.height + topPad + bottomPad)
+      .setOrigin(0, 0);
+    const scratch = this.add.graphics();
+    this.drawVehicleLineupStatic(scratch, h);
+    rt.draw(scratch, padX - h.x, topPad + h.height - h.baseY);
+    scratch.destroy();
+    // sit where the track sits inside the world container: below fx/car/dust
+    this.world.addAt(rt, 1);
+    this.lineupCache.set(h.id, { rt, right: h.x + h.width });
+    return rt;
+  }
+
+  private drawVehicleLineupStatic(g: Phaser.GameObjects.Graphics, h: Hazard): void {
     // Rotate the palette start per lineup so consecutive rows don't repeat
     // the same paint order.
     const paintOffset = Math.abs(Math.floor(h.x / 97)) % VEHICLE_PAINTS.length;
@@ -821,11 +929,24 @@ export class GameScene extends Phaser.Scene {
       // dark rocker panel under the body for depth
       g.fillStyle(paintDark, 1);
       g.fillRect(x0 + w * 0.04, base - hh * 0.18, w * 0.92, hh * 0.18);
-      // wheels + neon trim + taillight
+      // wheels
       g.fillStyle(0x05040f, 1);
       const wheelR = Math.min(9, hh * 0.16);
       g.fillCircle(x0 + w * 0.2, base - wheelR * 0.4, wheelR);
       g.fillCircle(x0 + w * 0.78, base - wheelR * 0.4, wheelR);
+    }
+  }
+
+  private drawVehicleLineup(h: Hazard, elapsed: number): void {
+    const fx = this.fx;
+    if (!this.lineupCache.has(h.id)) this.bakeVehicleLineup(h);
+    const blink = 0.5 + 0.5 * Math.sin(elapsed * 7 + h.x);
+    for (const unit of h.vehicles ?? []) {
+      const x0 = h.x + unit.dx;
+      const x1 = x0 + unit.width;
+      const top = h.baseY - unit.height;
+      const hh = unit.height;
+      // neon trim + taillight/headlight blink
       fx.lineStyle(2, 0x2ef2ff, 0.55);
       fx.lineBetween(x0 + 3, top + hh * 0.55, x1 - 3, top + hh * 0.55);
       fx.fillStyle(0xff3b5c, 0.7 + 0.3 * blink);
@@ -852,13 +973,19 @@ export class GameScene extends Phaser.Scene {
     g.fillStyle(launch ? 0x2a0f2e : 0x10163a, 1);
     g.fillPoints([{ x: seg.x0, y: seg.y0 }, { x: seg.x1, y: seg.y1 }, { x: seg.x1, y: lipY + 4 }, { x: seg.x0, y: lipY + 4 }], true);
     g.lineStyle(2, color, 0.35);
+    g.beginPath();
     const n = Math.max(2, Math.floor(len / 40));
     for (let i = 1; i < n; i += 1) {
       const px = seg.x0 + (len * i) / n;
       const py = seg.y0 + ((seg.y1 - seg.y0) * i) / n;
-      g.lineBetween(px, py + 3, px, lipY + 4);
-      if (i % 2) g.lineBetween(px, py + 3, seg.x0 + (len * (i + 1)) / n, lipY + 2);
+      g.moveTo(px, py + 3);
+      g.lineTo(px, lipY + 4);
+      if (i % 2) {
+        g.moveTo(px, py + 3);
+        g.lineTo(seg.x0 + (len * (i + 1)) / n, lipY + 2);
+      }
     }
+    g.strokePath();
     // animated chevrons along the surface
     const count = launch ? 5 : 3;
     const phase = (elapsed * 2.2) % 1;
@@ -930,7 +1057,12 @@ export class GameScene extends Phaser.Scene {
       const floorY = this.simulation.course.surfaceAt(h.x + h.width / 2)?.y;
       if (floorY !== undefined) {
         fx.lineStyle(2, 0xffb347, 0.5);
-        for (let sx = -60; sx < h.width + 60; sx += 18) fx.lineBetween(h.x + sx, floorY - 2, h.x + sx + 9, floorY - 2);
+        fx.beginPath();
+        for (let sx = -60; sx < h.width + 60; sx += 18) {
+          fx.moveTo(h.x + sx, floorY - 2);
+          fx.lineTo(h.x + sx + 9, floorY - 2);
+        }
+        fx.strokePath();
       }
     } else if (h.kind === 'piston') {
       const cx = h.x + h.width / 2;
@@ -1009,13 +1141,16 @@ export class GameScene extends Phaser.Scene {
     }
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    const [nx, ny] = artToCar(4, 61);
-    const ex = x + nx * cos - ny * sin;
-    const ey = y + nx * sin + ny * cos;
+    const ex = x + this.nozzleX * cos - this.nozzleY * sin;
+    const ey = y + this.nozzleX * sin + this.nozzleY * cos;
     this.exhaust.emitParticleAt(ex, ey, burning ? 3 : 1);
-    // speed ghost trail
-    this.trail.unshift({ x: ex, y: ey, a: 1 });
-    if (this.trail.length > 14) this.trail.pop();
+    // speed ghost trail — recycle the oldest point object instead of
+    // allocating a fresh one every frame (GC pressure on low-end phones)
+    const head = this.trail.length >= 14 ? this.trail.pop()! : { x: 0, y: 0, a: 1 };
+    head.x = ex;
+    head.y = ey;
+    head.a = 1;
+    this.trail.unshift(head);
     const fast = Math.min(1, Math.max(0, (state.speed - 600) / 300));
     if (fast > 0 || burning) {
       for (let i = 1; i < this.trail.length; i += 1) {
@@ -1033,27 +1168,35 @@ export class GameScene extends Phaser.Scene {
     const H = this.scale.height;
     f.clear();
     const zoom = this.zoom;
-    // fast parallax light posts along the bottom edge
+    // fast parallax light posts along the bottom edge — the fill height used
+    // to be H, painting ~1.7 screens of overdraw per post; clamp to the post.
     const spacing = 520 * zoom;
     const offset = ((worldLeft * zoom * 1.35) % spacing + spacing) % spacing;
     const biome = blendBiome(worldLeft);
+    const postScale = Math.max(1, zoom * 1.6);
+    const postH = 26 * postScale;
+    f.fillStyle(0x05040f, 0.9);
     for (let px = -offset; px < W + spacing; px += spacing) {
-      f.fillStyle(0x05040f, 0.9);
-      f.fillRect(px, H - 26 * Math.max(1, zoom * 1.6), 10 * zoom + 3, H);
-      f.fillStyle(biome.accent, 0.8);
-      f.fillRect(px - 6, H - 28 * Math.max(1, zoom * 1.6), 22 * zoom + 12, 3);
+      f.fillRect(px, H - postH, 10 * zoom + 3, postH + 2);
     }
-    // high-speed streaks
+    f.fillStyle(biome.accent, 0.8);
+    for (let px = -offset; px < W + spacing; px += spacing) {
+      f.fillRect(px - 6, H - 28 * postScale, 22 * zoom + 12, 3);
+    }
+    // high-speed streaks — one stroked path
     const fast = Math.min(1, Math.max(0, (speed - 620) / 320));
     if (fast > 0) {
       const t = this.time.now;
+      f.lineStyle(1.5, 0xffffff, 0.12 * fast);
+      f.beginPath();
       for (let i = 0; i < 10; i += 1) {
         const sy = ((i * 97.13) % 1) * H * 0.85 + H * 0.05;
         const len = 80 + (i % 4) * 50;
         const sx = W - ((t * (1.2 + (i % 3) * 0.4) + i * 211) % (W + len * 2));
-        f.lineStyle(1.5, 0xffffff, 0.12 * fast);
-        f.lineBetween(sx, sy, sx + len, sy);
+        f.moveTo(sx, sy);
+        f.lineTo(sx + len, sy);
       }
+      f.strokePath();
     }
   }
 
@@ -1081,6 +1224,8 @@ export class GameScene extends Phaser.Scene {
     this.previousX = state.x;
     this.previousY = state.y;
     this.previousAngle = state.angle;
+    this.camY = Number.NaN; // snap camera height on next draw instead of lerping
+    this.sceneDirty = true;
   }
 
   debugCourseLandmarks(): { vruns: unknown[]; vehicleRows: unknown[] } {
