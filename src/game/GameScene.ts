@@ -36,6 +36,26 @@ const ART_CY = CAR_ART.wheelY + CAR_ART.wheelRadius - (WHEEL_VERTICAL_OFFSET + W
 const WHEEL_WORLD_R = CAR_ART.wheelRadius * K;
 const artToCar = (ax: number, ay: number): [number, number] => [(ax - ART_CX) * K, (ay - ART_CY) * K];
 
+/** Parked-lineup paint jobs — synthwave palette, assigned per unit index. */
+const VEHICLE_PAINTS = [
+  0xe8452c, // ember red
+  0x2e8fff, // sky blue
+  0xffb347, // amber
+  0x9b5cff, // violet
+  0x2fd08c, // mint green
+  0xff5f9e, // hot pink
+  0x22c7d6, // teal
+  0xd0d4dc, // silver
+];
+const VEHICLE_GLASS = 0x0d1a33;
+
+function shadePaint(color: number, factor: number): number {
+  const r = Math.round(((color >> 16) & 0xff) * factor);
+  const g = Math.round(((color >> 8) & 0xff) * factor);
+  const b = Math.round((color & 0xff) * factor);
+  return (r << 16) | (g << 8) | b;
+}
+
 interface ParallaxLayer {
   sprite: Phaser.GameObjects.TileSprite;
   factor: number;
@@ -706,7 +726,12 @@ export class GameScene extends Phaser.Scene {
     const g = this.track;
     const fx = this.fx;
     const blink = 0.5 + 0.5 * Math.sin(elapsed * 7 + h.x);
-    for (const unit of h.vehicles ?? []) {
+    // Rotate the palette start per lineup so consecutive rows don't repeat
+    // the same paint order.
+    const paintOffset = Math.abs(Math.floor(h.x / 97)) % VEHICLE_PAINTS.length;
+    for (const [index, unit] of (h.vehicles ?? []).entries()) {
+      const paint = VEHICLE_PAINTS[(paintOffset + index) % VEHICLE_PAINTS.length];
+      const paintDark = shadePaint(paint, 0.55);
       const x0 = h.x + unit.dx;
       const x1 = x0 + unit.width;
       const base = h.baseY;
@@ -715,25 +740,26 @@ export class GameScene extends Phaser.Scene {
       const hh = unit.height;
       // body silhouette by kind
       if (unit.kind === 'semi') {
-        g.fillStyle(0x131b3d, 1);
+        g.fillStyle(paintDark, 1);
         g.fillRect(x0, top + hh * 0.12, w * 0.78, hh * 0.88);          // trailer
+        g.fillStyle(paint, 1);
         g.fillRect(x0 + w * 0.78, top + hh * 0.4, w * 0.22, hh * 0.6); // cab
-        g.fillStyle(0x1d2a55, 1);
+        g.fillStyle(VEHICLE_GLASS, 1);
         g.fillRect(x0 + w * 0.8, top + hh * 0.44, w * 0.16, hh * 0.22); // windshield
       } else if (unit.kind === 'pickup') {
-        g.fillStyle(0x15204a, 1);
+        g.fillStyle(paint, 1);
         g.fillRect(x0, top + hh * 0.45, w, hh * 0.55);                 // bed+body
         g.fillRect(x0 + w * 0.3, top, w * 0.38, hh * 0.5);             // angular cab
-        g.fillStyle(0x22335f, 1);
+        g.fillStyle(VEHICLE_GLASS, 1);
         g.fillRect(x0 + w * 0.34, top + hh * 0.08, w * 0.3, hh * 0.26);
       } else if (unit.kind === 'sport') {
-        g.fillStyle(0x101a40, 1);
+        g.fillStyle(paint, 1);
         g.fillPoints([
           { x: x0, y: base - hh * 0.35 }, { x: x0 + w * 0.12, y: top + hh * 0.3 },
           { x: x0 + w * 0.5, y: top }, { x: x0 + w * 0.82, y: top + hh * 0.28 },
           { x: x1, y: base - hh * 0.3 }, { x: x1, y: base }, { x: x0, y: base },
         ], true);
-        g.fillStyle(0x24407a, 1);
+        g.fillStyle(VEHICLE_GLASS, 1);
         g.fillPoints([
           { x: x0 + w * 0.34, y: top + hh * 0.12 }, { x: x0 + w * 0.5, y: top + hh * 0.02 },
           { x: x0 + w * 0.68, y: top + hh * 0.14 }, { x: x0 + w * 0.62, y: top + hh * 0.3 },
@@ -741,19 +767,22 @@ export class GameScene extends Phaser.Scene {
         ], true);
       } else {
         // sedan: rounded wedge
-        g.fillStyle(0x131f49, 1);
+        g.fillStyle(paint, 1);
         g.fillPoints([
           { x: x0, y: base - hh * 0.3 }, { x: x0 + w * 0.16, y: top + hh * 0.42 },
           { x: x0 + w * 0.4, y: top + hh * 0.05 }, { x: x0 + w * 0.72, y: top + hh * 0.12 },
           { x: x0 + w * 0.9, y: top + hh * 0.45 }, { x: x1, y: base - hh * 0.22 },
           { x: x1, y: base }, { x: x0, y: base },
         ], true);
-        g.fillStyle(0x20325e, 1);
+        g.fillStyle(VEHICLE_GLASS, 1);
         g.fillPoints([
           { x: x0 + w * 0.42, y: top + hh * 0.14 }, { x: x0 + w * 0.68, y: top + hh * 0.2 },
           { x: x0 + w * 0.78, y: top + hh * 0.42 }, { x: x0 + w * 0.44, y: top + hh * 0.4 },
         ], true);
       }
+      // dark rocker panel under the body for depth
+      g.fillStyle(paintDark, 1);
+      g.fillRect(x0 + w * 0.04, base - hh * 0.18, w * 0.92, hh * 0.18);
       // wheels + neon trim + taillight
       g.fillStyle(0x05040f, 1);
       const wheelR = Math.min(9, hh * 0.16);
