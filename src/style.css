@@ -92,9 +92,14 @@ button { color: inherit; touch-action: manipulation; }
 .feedback-stack { position: absolute; left: 50%; top: 28%; transform: translateX(-50%); display: grid; gap: 8px; justify-items: center; }
 .feedback-item { font: 700 clamp(13px, 2vw, 22px) "Orbitron", sans-serif; letter-spacing: .16em; color: var(--orange); text-shadow: 0 0 12px rgba(255, 179, 71, .7), 0 2px 3px #090a25; animation: feedback-pop 1.5s both; }
 .feedback-perfect { color: var(--cyan); text-shadow: 0 0 15px rgba(46, 242, 255, .8); }
+.feedback-milestone { font-size: clamp(17px, 3vw, 30px); color: #ffd166; text-shadow: 0 0 18px rgba(255, 209, 102, .9), 0 0 42px rgba(255, 140, 80, .5), 0 2px 4px #090a25; animation: feedback-legend 2.3s both; }
 
 .modal-panel { top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(520px, calc(100vw - 36px)); max-height: min(90vh, 760px); overflow: auto; padding: clamp(24px, 4vw, 38px); text-align: center; background: linear-gradient(150deg, rgba(21, 21, 57, .94), rgba(9, 10, 33, .96)); border: 1px solid rgba(126, 153, 220, .32); box-shadow: 0 24px 90px rgba(4, 4, 22, .75), inset 0 0 40px rgba(123, 44, 255, .1); backdrop-filter: blur(18px); }
 .modal-panel::before { content: ""; position: absolute; top: -1px; left: 12%; width: 76%; height: 2px; background: linear-gradient(90deg, transparent, var(--cyan), var(--purple), transparent); }
+.modal-panel.is-victory { border-color: rgba(255, 209, 102, .55); box-shadow: 0 24px 90px rgba(4, 4, 22, .75), 0 0 64px rgba(255, 179, 71, .28), inset 0 0 40px rgba(255, 179, 71, .12); }
+.modal-panel.is-victory::before { background: linear-gradient(90deg, transparent, var(--orange), #ffd166, transparent); }
+.modal-panel.is-victory .panel-eyebrow { color: var(--orange); }
+.modal-panel.is-victory .result-score strong { text-shadow: 0 0 28px rgba(255, 179, 71, .55); }
 .panel-eyebrow { display: block; color: var(--cyan); font-size: 8px; line-height: 1.5; }
 .modal-panel h2, .nickname-dialog h2 { font: 700 clamp(20px, 3vw, 30px)/1.2 "Orbitron", sans-serif; letter-spacing: .04em; margin: 9px 0 9px; }
 .modal-panel h2 em { color: var(--coral); font-style: normal; }
@@ -155,6 +160,7 @@ button { color: inherit; touch-action: manipulation; }
 @keyframes rise-in { from { opacity: 0; transform: translateY(11px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes pulse { from { opacity: .72; } to { opacity: 1; } }
 @keyframes feedback-pop { 0% { opacity: 0; transform: translateY(16px) scale(.85); } 16% { opacity: 1; transform: translateY(0) scale(1); } 78% { opacity: 1; } 100% { opacity: 0; transform: translateY(-13px); } }
+@keyframes feedback-legend { 0% { opacity: 0; transform: scale(.55); } 10% { opacity: 1; transform: scale(1.14); } 18% { transform: scale(1); } 30% { transform: scale(1.06); } 40% { transform: scale(1); } 82% { opacity: 1; } 100% { opacity: 0; transform: translateY(-18px) scale(1.03); } }
 
 @media (orientation: portrait) {
   .menu-panel { justify-content: flex-end; padding-top: 115px; padding-bottom: max(105px, calc(env(safe-area-inset-bottom) + 94px)); background: linear-gradient(0deg, rgba(7, 8, 30, .84), rgba(7, 8, 30, .56) 45%, rgba(7, 8, 30, .06) 100%); }

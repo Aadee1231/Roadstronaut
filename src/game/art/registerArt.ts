@@ -2,6 +2,7 @@ import type Phaser from 'phaser';
 import { BIOMES } from '../biomes';
 import { drawMountains, drawSkyline, drawSkylineLights, drawStars, drawStructureBeacons, drawStructures, drawSun } from './backgroundArt';
 import { CAR_ART, drawCarBody, drawWheel } from './carArt';
+import { CONFETTI_ART, DANCER_ART, ROCKET_ART, drawConfetti, drawDancer, drawRocket } from './easterEggArt';
 
 /** Supersampling factor for the car textures. */
 export const CAR_TEXTURE_SCALE = 2;
@@ -57,6 +58,10 @@ export function registerArt(scene: Phaser.Scene): void {
   });
   canvasTexture(scene, 'spark', 32, 32, (ctx) => radial(ctx, 32, [[0, 'rgba(255,255,255,1)'], [0.25, 'rgba(255,255,255,0.8)'], [1, 'rgba(255,255,255,0)']]));
   canvasTexture(scene, 'smoke', 64, 64, (ctx) => radial(ctx, 64, [[0, 'rgba(255,255,255,0.55)'], [0.5, 'rgba(255,255,255,0.22)'], [1, 'rgba(255,255,255,0)']]));
+  canvasTexture(scene, 'confetti', CONFETTI_ART.width, CONFETTI_ART.height, drawConfetti);
+  canvasTexture(scene, 'egg-rocket', ROCKET_ART.width, ROCKET_ART.height, drawRocket);
+  canvasTexture(scene, 'egg-dancer-a', DANCER_ART.width * s, DANCER_ART.height * s, (ctx) => drawDancer(ctx, s, 'jump'));
+  canvasTexture(scene, 'egg-dancer-b', DANCER_ART.width * s, DANCER_ART.height * s, (ctx) => drawDancer(ctx, s, 'pump'));
   canvasTexture(scene, 'glow', 128, 128, (ctx) => radial(ctx, 128, [[0, 'rgba(255,255,255,0.9)'], [0.35, 'rgba(255,255,255,0.3)'], [1, 'rgba(255,255,255,0)']]));
   canvasTexture(scene, 'bg-stars', 1024, 512, drawStars);
   canvasTexture(scene, 'bg-sun', 512, 512, (ctx, w) => drawSun(ctx, w));

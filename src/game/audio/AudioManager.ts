@@ -89,6 +89,12 @@ export class AudioManager {
     this.events.on('audio-mute', (muted: boolean) => this.setMuted(muted));
     this.events.on('ui-sound', (key: string) => this.play(key));
     this.events.on('run-new-best', () => this.play('newBest'));
+    this.events.on('run-victory', () => {
+      this.play('newBest');
+      this.play('perfect');
+      this.play('rocket');
+      this.play('combo');
+    });
     this.events.on('run-state', (state: SimulationState, list: readonly SimEvent[]) => this.onSimulation(state, list));
     this.events.on('run-finished', () => {
       this.stopLoops();
@@ -171,6 +177,7 @@ export class AudioManager {
       else if (event.type === 'vehicleFlip') { this.play('superLaunch'); this.play('flip'); }
       else if (event.type === 'verticalRunLanded') this.play('perfect');
       else if (event.type === 'comboUp') this.play('combo');
+      else if (event.type === 'scoreMilestone') { this.play('perfect'); this.play('combo'); }
       else if (event.type === 'crash') this.play('crash');
     }
   }

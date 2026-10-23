@@ -6,8 +6,8 @@ import {
   LANDING_LIMIT, LAUNCH_BOOST, LAUNCH_WINDOW_FRACTION,
   MIN_AUTO_TAKEOFF_VELOCITY, MIN_REWARD_AIRTIME, MAX_ANGULAR_SPEED, MAX_RUN_SECONDS,
   NEAR_MISS_CLEARANCE, PERFECT_LIMIT, ROTATION_ACCEL, ROTATION_ENERGY_PER_SECOND,
-  RECOVERY_ANGULAR_SPEED, RECOVERY_MARGIN, RECOVERY_TRIGGER_OFF, SUCTION_ALIGN, SUCTION_POINTS_PER_SECOND,
-  SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
+  RECOVERY_ANGULAR_SPEED, RECOVERY_MARGIN, RECOVERY_TRIGGER_OFF, SCORE_MILESTONES, SUCTION_ALIGN,
+  SUCTION_POINTS_PER_SECOND, SNAP_TOLERANCE, START_SPEED, SUPER_JUMP_VELOCITY,
   VERTICAL_LAUNCH_BOOST, VERTICAL_LAUNCH_VY_CAP, VERTICAL_RUN_BONUS, WIN_SCORE,
   WHEELBASE, WHEEL_RADIUS, speedAtTime,
 } from './constants.js';
@@ -38,6 +38,7 @@ export type SimEvent =
   | { type: 'vehicleFlip' }
   | { type: 'stuntFlip' }
   | { type: 'airBurst' }
+  | { type: 'scoreMilestone'; milestone: number }
   | { type: 'win' }
   | { type: 'crash'; reason: 'obstacle' | 'bad-landing' | 'fell' | 'time-limit' };
 
@@ -188,6 +189,7 @@ export class Simulation {
       this.crash('time-limit');
       return;
     }
+    const scoreBefore = state.stats.score;
     const dt = FIXED_DT;
     this.previousWheelBottoms = [
       this.wheelBottomAt(WHEELBASE / 2),
@@ -372,6 +374,11 @@ export class Simulation {
     if (Math.floor(state.elapsed / 10) > this.lastMilestone) {
       this.lastMilestone = Math.floor(state.elapsed / 10);
       this.events.push({ type: 'milestone' });
+    }
+    for (const milestone of SCORE_MILESTONES) {
+      if (scoreBefore < milestone && state.stats.score >= milestone) {
+        this.events.push({ type: 'scoreMilestone', milestone });
+      }
     }
     if (!state.crashed && !state.won && state.stats.score >= WIN_SCORE) this.win();
     this.previousHeld = held;

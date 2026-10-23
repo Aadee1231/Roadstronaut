@@ -224,3 +224,30 @@ describe('simulation input and replay', () => {
     expect(replayRun(991, inputs)).toEqual(replayRun(991, inputs));
   });
 });
+
+describe('score milestones and victory', () => {
+  it('emits a scoreMilestone when the run crosses 500,000', () => {
+    const simulation = new Simulation(11);
+    simulation.state.stats.score = 499_990;
+    let saw = false;
+    for (let tick = 0; tick < 600 && !saw; tick += 1) {
+      simulation.step(false);
+      saw = simulation.events.some((event) => event.type === 'scoreMilestone' && event.milestone === 500_000);
+    }
+    expect(saw).toBe(true);
+  });
+
+  it('ends the run as a win at one million', () => {
+    const simulation = new Simulation(11);
+    simulation.state.stats.score = 999_990;
+    let sawWin = false;
+    for (let tick = 0; tick < 600 && !simulation.state.crashed; tick += 1) {
+      simulation.step(false);
+      sawWin ||= simulation.events.some((event) => event.type === 'win');
+    }
+    expect(sawWin).toBe(true);
+    expect(simulation.state.won).toBe(true);
+    expect(simulation.state.crashed).toBe(true);
+    expect(simulation.state.crashReason).toBe('won');
+  });
+});

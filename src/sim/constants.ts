@@ -15,6 +15,8 @@ export const TOP_SPEED = 2812;
 export const SPEED_CRUISE_RATE = 2.5;
 /** Score that wins the game. */
 export const WIN_SCORE = 1_000_000;
+/** Score thresholds that fire a one-time celebration event when crossed. */
+export const SCORE_MILESTONES: readonly number[] = [500_000];
 export const GRAVITY = 1200;
 export const JUMP_VELOCITY = -520;
 export const SUPER_JUMP_VELOCITY = -740;

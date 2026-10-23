@@ -76,6 +76,7 @@ export class GameUI {
   private fanRailMessageShown = false;
   private milestoneCount = 0;
   private scoreAnimationFrame = 0;
+  private victoryRevealTimer = 0;
   private lastHudAt = 0;
   private readonly elementCache = new Map<string, HTMLElement | null>();
   private readonly actions: Record<string, (button: HTMLButtonElement) => void>;
@@ -240,6 +241,7 @@ export class GameUI {
 
   private async beginRun(): Promise<void> {
     this.playing = true;
+    window.clearTimeout(this.victoryRevealTimer);
     this.fanRailMessageShown = false;
     this.milestoneCount = 0;
     this.hideAllPanels();
@@ -280,9 +282,8 @@ export class GameUI {
     this.gameOverAt = performance.now();
     this.lastRunInput = result.inputLog;
     const state = result.state;
-    this.hide('hud');
-    this.show('gameover-screen');
     // Victory copy when the run hits the 1,000,000 win score.
+    this.root.querySelector('#gameover-screen')?.classList.toggle('is-victory', state.won);
     const eyebrow = this.root.querySelector<HTMLElement>('#gameover-screen .panel-eyebrow');
     const heading = this.root.querySelector<HTMLElement>('#gameover-screen h2');
     if (eyebrow) eyebrow.textContent = state.won ? 'LEGEND STATUS' : 'RUN COMPLETE';
@@ -292,6 +293,18 @@ export class GameUI {
         : "THE ROAD ENDS.<br><em>THE LEGEND DOESN'T.</em>";
     }
     this.fillResult(state);
+    if (state.won) {
+      // Let the launch celebration play before the results panel lands.
+      this.victoryRevealTimer = window.setTimeout(() => {
+        if (this.playing) return;
+        this.hide('hud');
+        this.hide('pause-screen');
+        this.show('gameover-screen');
+      }, 2200);
+    } else {
+      this.hide('hud');
+      this.show('gameover-screen');
+    }
     const newBest = state.stats.score > this.personalBest;
     if (newBest) {
       this.personalBest = state.stats.score;
@@ -386,11 +399,19 @@ export class GameUI {
     this.updateTutorial(state);
   }
 
-  showEvents(events: readonly { type: string; quality?: string; flips?: number }[]): void {
+  showEvents(events: readonly { type: string; quality?: string; flips?: number; milestone?: number }[]): void {
     if (!events.length) return;
     const hard = events.some((event) => event.type === 'hardLanding');
     const landingLabels = new Map(landingFeedbackLabels(events, hard).map((feedback) => [feedback.eventIndex, feedback]));
     events.forEach((event, eventIndex) => {
+      if (event.type === 'scoreMilestone') {
+        this.addFeedback('★ HALF A MILLION — KEEP GOING ★', false, 'milestone');
+        return;
+      }
+      if (event.type === 'win') {
+        this.addFeedback('★ 1,000,000 — LEGEND STATUS ★', false, 'milestone');
+        return;
+      }
       if (event.type === 'milestone') {
         this.milestoneCount += 1;
         if (this.milestoneCount % 3 === 0) {
@@ -413,19 +434,18 @@ export class GameUI {
               : event.type === 'verticalSuction' ? 'SUCTION ENGAGED'
               : event.type === 'thrustersArmed' ? 'THRUSTERS ARMED'
               : event.type === 'verticalRunLanded' ? 'VERTICAL RUN +1500'
-              : event.type === 'win' ? '1,000,000 — LEGEND STATUS'
                 : event.type === 'crash' ? 'RUN ENDED' : '');
       if (!label) return;
       this.addFeedback(label, landingFeedback?.perfect ?? false);
     });
   }
 
-  private addFeedback(label: string, perfect = false): void {
+  private addFeedback(label: string, perfect = false, variant?: 'milestone'): void {
     const item = document.createElement('div');
-    item.className = `feedback-item ${perfect ? 'feedback-perfect' : ''}`;
+    item.className = `feedback-item ${perfect ? 'feedback-perfect' : ''} ${variant === 'milestone' ? 'feedback-milestone' : ''}`;
     item.textContent = label;
     this.el('#feedback-stack')?.append(item);
-    window.setTimeout(() => item.remove(), 1550);
+    window.setTimeout(() => item.remove(), variant === 'milestone' ? 2400 : 1550);
   }
 
   private updateTutorial(state: SimulationState): void {

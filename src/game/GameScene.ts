@@ -119,6 +119,12 @@ export class GameScene extends Phaser.Scene {
   private drawElapsed = Number.POSITIVE_INFINITY;
   private idleElapsed = 0;
   private sceneDirty = true;
+  private confettiPop!: Phaser.GameObjects.Particles.ParticleEmitter;
+  private confettiRain!: Phaser.GameObjects.Particles.ParticleEmitter;
+  private dancer!: Phaser.GameObjects.Image;
+  /** Keeps the post-run renderer awake while the win celebration plays out. */
+  private celebrating = false;
+  private readonly celebrationCleanups: (() => void)[] = [];
 
   constructor() {
     super('game');
@@ -176,6 +182,30 @@ export class GameScene extends Phaser.Scene {
     this.world = this.add.container(0, 0, [this.track, this.exhaust, this.fx, this.car, this.dust, this.sparks]).setDepth(0);
     this.foreground = this.add.graphics().setScrollFactor(0).setDepth(20);
 
+    const confettiTints = [0x2ef2ff, 0x7b2cff, 0xffb347, 0xff6b4a, 0xd06bff, 0xf2feff];
+    this.confettiPop = this.add.particles(0, 0, 'confetti', {
+      lifespan: { min: 900, max: 1700 }, speed: { min: 200, max: 560 }, angle: { min: 0, max: 360 },
+      gravityY: 520, scale: { start: 1, end: 0.5 }, rotate: { min: -260, max: 260 },
+      alpha: { start: 1, end: 0.85 }, tint: confettiTints, emitting: false,
+    }).setDepth(26);
+    this.confettiRain = this.add.particles(0, 0, 'confetti', {
+      emitZone: {
+        type: 'random',
+        source: {
+          getRandomPoint: (point: Phaser.Types.Math.Vector2Like): Phaser.Types.Math.Vector2Like => {
+            point.x = Math.random() * this.scale.width;
+            point.y = -30;
+            return point;
+          },
+        },
+      },
+      speedY: { min: 150, max: 380 }, speedX: { min: -70, max: 70 }, gravityY: 130,
+      rotate: { min: -300, max: 300 }, lifespan: { min: 2200, max: 3400 },
+      scale: { min: 0.8, max: 1.35 }, alpha: { start: 1, end: 0.7 },
+      tint: confettiTints, frequency: 30, emitting: false,
+    }).setDepth(26);
+    this.dancer = this.add.image(0, 0, 'egg-dancer-a').setDepth(27).setVisible(false).setScale(0.5);
+
     this.scale.on('resize', this.resizeScene, this);
     this.resizeScene(this.scale.gameSize);
     this.game.events.on('run-start', this.startRun, this);
@@ -208,7 +238,7 @@ export class GameScene extends Phaser.Scene {
     this.drawElapsed += dt;
     if (!this.activeRun && !this.attractMode) {
       this.crashTimer += dt;
-      this.idleElapsed += dt;
+      if (!this.celebrating) this.idleElapsed += dt;
       const shouldDraw = (this.idleElapsed < IDLE_FREEZE_SECONDS && (this.drawElapsed >= DRAW_INTERVAL || delta >= HIGH_REFRESH_FRAME_MS)) || this.sceneDirty;
       if (shouldDraw) {
         this.drawScene(Math.min(this.drawElapsed, 0.1));
@@ -300,6 +330,7 @@ export class GameScene extends Phaser.Scene {
     this.camY = Number.NaN;
     this.trail.length = 0;
     this.crashTimer = 0;
+    this.stopCelebration();
     this.car.setVisible(true).setAlpha(1);
     this.carBody.clearTint();
     this.carBody.setTexture(readPaint() === 'coral' ? 'car-body-coral' : 'car-body');
@@ -455,12 +486,14 @@ export class GameScene extends Phaser.Scene {
           this.dust.explode(4, state.x + c * side * 24, state.y + s * side * 24);
           break;
         }
+        case 'scoreMilestone':
+          if (this.activeRun || this.finishedRun) this.celebrateMilestone();
+          break;
         case 'win': {
           this.sparks.explode(60, state.x, state.y);
           this.exhaust.explode(40, state.x, state.y);
           this.dust.explode(24, state.x, state.y);
-          cam.shake(200, 0.006);
-          cam.flash(300, 255, 220, 120, true);
+          if (this.activeRun || this.finishedRun) this.celebrateVictory();
           break;
         }
         case 'hardLanding':
@@ -479,6 +512,112 @@ export class GameScene extends Phaser.Scene {
           break;
       }
     }
+  }
+
+  private celebrateMilestone(): void {
+    const cam = this.cameras.main;
+    const W = this.scale.width;
+    const H = this.scale.height;
+    cam.flash(320, 255, 205, 110, true);
+    cam.shake(180, 0.005);
+    this.confettiPop.explode(46, W * 0.5, H * 0.3);
+    this.celebrationDelay(140, () => this.confettiPop.explode(30, W * 0.2, H * 0.42));
+    this.celebrationDelay(280, () => this.confettiPop.explode(30, W * 0.8, H * 0.42));
+    for (let i = 0; i < 3; i += 1) this.celebrationDelay(i * 300, () => this.spawnRocket());
+  }
+
+  private celebrateVictory(): void {
+    const cam = this.cameras.main;
+    const W = this.scale.width;
+    const H = this.scale.height;
+    this.celebrating = true;
+    cam.flash(340, 255, 232, 160, true);
+    cam.shake(300, 0.007);
+    this.confettiPop.explode(60, W * 0.5, H * 0.35);
+    this.confettiPop.explode(40, W * 0.15, H * 0.2);
+    this.confettiPop.explode(40, W * 0.85, H * 0.2);
+    this.confettiRain.start();
+    const rainStop = this.time.delayedCall(5400, () => this.confettiRain.stop());
+    const rockets = this.time.addEvent({ delay: 150, repeat: 34, callback: () => this.spawnRocket() });
+    const dancerIn = this.time.delayedCall(700, () => this.showDancer());
+    const settle = this.time.delayedCall(6500, () => { this.celebrating = false; });
+    this.celebrationCleanups.push(() => {
+      rainStop.remove();
+      rockets.remove();
+      dancerIn.remove();
+      settle.remove();
+    });
+    this.game.events.emit('run-victory');
+  }
+
+  private celebrationDelay(ms: number, fn: () => void): void {
+    const timer = this.time.delayedCall(ms, fn);
+    this.celebrationCleanups.push(() => timer.remove());
+  }
+
+  private spawnRocket(): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const leftToRight = Math.random() < 0.5;
+    const startY = H * (0.08 + Math.random() * 0.5);
+    const deltaY = (Math.random() - 0.5) * H * 0.35;
+    const startX = leftToRight ? -170 : W + 170;
+    const endX = leftToRight ? W + 190 : -190;
+    const rocket = this.add.image(startX, startY, 'egg-rocket')
+      .setDepth(25)
+      .setScale(0.45 + Math.random() * 0.5)
+      .setFlipY(!leftToRight)
+      .setRotation(Math.atan2(deltaY, endX - startX));
+    const trail = this.add.particles(startX, startY, 'smoke', {
+      follow: rocket,
+      speedX: leftToRight ? { min: -120, max: -40 } : { min: 40, max: 120 },
+      speedY: { min: -14, max: 14 },
+      lifespan: { min: 300, max: 620 },
+      scale: { start: 0.5, end: 1.3 },
+      alpha: { start: 0.45, end: 0 },
+      tint: [0xbfd4ff, 0x9ffbff, 0xffffff],
+      frequency: 26,
+    }).setDepth(24);
+    let done = false;
+    const cleanup = (): void => {
+      if (done) return;
+      done = true;
+      trail.destroy();
+      rocket.destroy();
+    };
+    this.tweens.add({
+      targets: rocket, x: endX, y: startY + deltaY,
+      duration: 1200 + Math.random() * 1100, ease: 'Linear', onComplete: cleanup,
+    });
+    this.celebrationCleanups.push(cleanup);
+  }
+
+  private showDancer(): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const floorY = H - Math.max(96, H * 0.15);
+    this.dancer.setVisible(true).setAlpha(1).setRotation(0).setTexture('egg-dancer-a')
+      .setPosition(this.portrait ? W * 0.5 : W * 0.78, H + 140);
+    this.tweens.add({ targets: this.dancer, y: floorY, duration: 420, ease: 'Back.easeOut' });
+    this.tweens.add({ targets: this.dancer, y: floorY - 56, duration: 300, yoyo: true, repeat: -1, ease: 'Sine.easeOut', delay: 430 });
+    this.dancer.setAngle(-11);
+    this.tweens.add({ targets: this.dancer, angle: 11, duration: 300, yoyo: true, repeat: -1, ease: 'Sine.easeInOut', delay: 430 });
+    const poseTimer = this.time.addEvent({
+      delay: 300,
+      loop: true,
+      callback: () => this.dancer.setTexture(this.dancer.texture.key === 'egg-dancer-a' ? 'egg-dancer-b' : 'egg-dancer-a'),
+    });
+    this.celebrationCleanups.push(() => {
+      poseTimer.remove();
+      this.tweens.killTweensOf(this.dancer);
+      this.dancer.setVisible(false);
+    });
+  }
+
+  private stopCelebration(): void {
+    this.celebrating = false;
+    this.confettiRain?.stop();
+    for (const cleanup of this.celebrationCleanups.splice(0)) cleanup();
   }
 
   private wheelWorld(index: 0 | 1): { x: number; y: number } {
@@ -993,7 +1132,7 @@ export class GameScene extends Phaser.Scene {
     // flat somersault. roll ≈ π/2 shows the thin side profile.
     const rollSquash = Math.max(0.14, Math.abs(Math.cos(state.roll)));
     this.car.setScale(1, rollSquash);
-    if (!state.crashed) this.wheelSpin += (state.speed * dt) / WHEEL_WORLD_R;
+    if (!state.crashed || state.won) this.wheelSpin += (state.speed * dt) / WHEEL_WORLD_R;
     for (const w of this.wheels) w.setRotation(this.wheelSpin);
     this.flameTimer = Math.max(0, this.flameTimer - dt);
     const rotating = state.rotating && !state.crashed;
@@ -1002,6 +1141,16 @@ export class GameScene extends Phaser.Scene {
     this.flame.setVisible(burning).setScale((rotating ? 0.75 : 0.55) * flicker * K * 1.6, (0.7 + 0.15 * flicker) * K * 1.6);
     this.flameGlow.setAlpha(burning ? 0.85 : 0.25).setScale(burning ? 0.7 : 0.3);
     if (state.crashed) {
+      if (state.won) {
+        const t = this.crashTimer;
+        const lift = 110 * t + 430 * t * t;
+        this.car.setPosition(x + 160 * t, y - lift).setRotation(displayedAngle - Math.min(0.4, t * 0.28));
+        this.flame.setVisible(true).setScale(1.15 * flicker * K * 1.6, (1 + 0.2 * flicker) * K * 1.6);
+        this.flameGlow.setAlpha(0.95).setScale(0.9);
+        this.exhaust.emitParticleAt(x + 160 * t - 50, y - lift + 14, 3);
+        this.car.setAlpha(Math.max(0, 1 - Math.max(0, t - 1.9) * 0.9));
+        return;
+      }
       this.crashTimer += 0;
       this.car.setAlpha(Math.max(0.35, 1 - this.crashTimer));
       this.flame.setVisible(false);
